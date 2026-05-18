@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -58,6 +58,10 @@ pub struct App {
     browser_cwd: PathBuf,
     browser_entries: Vec<(String, bool)>,
     browser_selection: usize,
+
+    last_click_col: u16,
+    last_click_row: u16,
+    last_click_time: Instant,
 }
 
 enum Focus {
@@ -98,6 +102,9 @@ impl App {
             browser_cwd,
             browser_entries: Vec::new(),
             browser_selection: 0,
+            last_click_col: 0,
+            last_click_row: 0,
+            last_click_time: Instant::now(),
         };
         app.load_album_tracks();
         app.load_browser();
@@ -615,6 +622,14 @@ impl App {
         match event {
             Event::Mouse(m) => {
                 if m.kind == MouseEventKind::Down(MouseButton::Left) {
+                    let now = Instant::now();
+                    let is_double = now.duration_since(self.last_click_time) < Duration::from_millis(400)
+                        && m.column == self.last_click_col
+                        && m.row == self.last_click_row;
+                    self.last_click_time = now;
+                    self.last_click_col = m.column;
+                    self.last_click_row = m.row;
+
                     let (term_w, term_h) = size().unwrap_or((80, 24));
                     let main_h = term_h.saturating_sub(5);
                     let left_w = term_w * 38 / 100;
@@ -659,6 +674,10 @@ impl App {
                                 }
                             }
                         }
+                    }
+
+                    if is_double {
+                        self.play_selected_track();
                     }
                 }
                 return Ok(());
