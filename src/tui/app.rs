@@ -687,24 +687,7 @@ impl App {
 
                 KeyCode::Char('x') | KeyCode::Char('X') => {
                     self.input_mode = InputMode::RemovePath;
-                    let mut paths: Vec<String> = self.config.music_dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
-                    for t in &self.all_tracks {
-                        let mut p = std::path::Path::new(&t.path);
-                        for _ in 0..3 {
-                            if let Some(parent) = p.parent() {
-                                let s = parent.to_string_lossy().to_string();
-                                if !paths.contains(&s) {
-                                    paths.push(s);
-                                }
-                                p = parent;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    paths.sort();
-                    paths.dedup();
-                    self.remove_paths = paths;
+                    self.remove_paths = self.config.music_dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
                     self.remove_path_selection = 0;
                     self.status_msg.clear();
                 }

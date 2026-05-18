@@ -92,10 +92,10 @@ pub fn handle_command(cli: &Cli, db: &Arc<Database>) -> Result<()> {
 }
 
 fn cmd_scan(folder: Option<&str>, library: &Library) -> Result<()> {
+    let mut config = Config::load()?;
     let folder = match folder {
         Some(f) => f.to_string(),
         None => {
-            let config = Config::load()?;
             match config.music_dirs.first() {
                 Some(d) => d.to_string_lossy().to_string(),
                 None => anyhow::bail!("No music directory configured. Use: music config set-music-dir <path>"),
@@ -108,6 +108,10 @@ fn cmd_scan(folder: Option<&str>, library: &Library) -> Result<()> {
     }
     println!("Scanning {folder}...");
     let (ok, err) = library.scan(path)?;
+    if !config.music_dirs.iter().any(|d| d == path) {
+        config.music_dirs.push(path.to_path_buf());
+        config.save()?;
+    }
     let mut msg = format!("Scanned {ok} tracks into library");
     if err > 0 {
         msg.push_str(&format!(" ({err} skipped)"));
