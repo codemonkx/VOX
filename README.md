@@ -11,7 +11,7 @@
 | | |
 |---|---|
 | 🎛️ **Two-panel layout** | Browse albums on the right, pick tracks on the left |
-| ⌨️ **Keyboard-only** | No mouse needed — vim-style navigation |
+| ⌨️ **Keyboard + Mouse** | Vim-style keys + click to select, double-click to play |
 | 📋 **Metadata panel** | See title, artist, album, bitrate, sample rate & codec |
 | ▶️ **Now playing** | `♪` highlights the current track and album |
 | 📂 **File browser** | Press `/` to browse folders and pick what to scan |
@@ -84,6 +84,14 @@ vox --help              # View all commands
 | `Esc` | Cancel current mode |
 | `Ctrl+R` | Rescan all tracked paths for new files |
 | `Ctrl+C` | Force quit |
+
+### 🖱️ Mouse
+
+| Action | Result |
+|---|---|
+| Left click (right panel) | Select album |
+| Left click (left panel, below metadata) | Select track |
+| Double-click (left panel, below metadata) | Play selected track |
 
 ### 🧭 Input Modes
 
