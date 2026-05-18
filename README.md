@@ -2,19 +2,44 @@
 
 A terminal music player with an ncmpcpp-style TUI, written in Rust.
 
-![screenshot](https://img.shields.io/badge/license-MIT-blue)
+![license](https://img.shields.io/badge/license-MIT-blue)
 
 ## Features
 
 - **Two-panel layout** — album browser (right) + track list with metadata panel (left)
-- **Keyboard-driven** — vim-style navigation, no mouse needed
-- **Metadata display** — title, artist, album, bitrate, sample rate, codec
-- **Library management** — scan folders, browse by album, search across all tracks
+- **Keyboard-driven** — vim-style navigation, fully mouseless
+- **Metadata panel** — title, artist, album, bitrate, sample rate, codec for the current track
+- **Now-playing indicators** — `♪` marks the current track and album in both panels
+- **Library management** — scan folders, browse by album, search across all tracks, remove tracked paths
 - **Playback controls** — play/pause, next/previous, volume, mute, repeat, shuffle
-- **Progress bar** — real-time elapsed/total with visual progress indicator
-- **Persistent config** — volume, shuffle, repeat saved to `~/.config/vox/config.json`
-- **Database-backed library** — fast metadata lookups via sled
+- **Progress bar** — real-time elapsed/total with visual progress indicator in the status bar
+- **Search** — live-filter tracks by title, artist, or album
+- **Persistent config** — volume, shuffle, repeat, and music directories saved to JSON
+- **Database-backed library** — fast metadata lookups via sled (embedded)
 - **Format support** — FLAC, MP3, WAV, OGG Vorbis, Opus, AAC, AIFF, M4A
+
+## Screenshot
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  [/] add folder  [x] remove path  [F] search  🔁  🔀  | Q  │
+├───────────────┬──────────────────────────────────────────────┤
+│  Name:   Song │  Albums                                      │
+│  Album:  ...  │  ▸ Album Name 1  (12 tracks) ♪              │
+│  Length: 3:42 │    Album Name 2  (8 tracks)                  │
+│  Bitrate: 320 │    Album Name 3  (15 tracks)                 │
+│  Sample: 44.1k│                                              │
+│  Artist: ...  │                                              │
+│               │                                              │
+│  ▸ 01. Song ♪ │                                              │
+│    02. Song   │                                              │
+│    03. Song   │                                              │
+├───────────────┴──────────────────────────────────────────────┤
+│  130 items  ▸ Song — Artist  ▸  Vol: 80% FLAC | 1:23 ████░  │
+├──────────────────────────────────────────────────────────────┤
+│  [/] add folder  [F] search  [D] remove album  [Tab] switch  │
+└──────────────────────────────────────────────────────────────┘
+```
 
 ## Installation
 
@@ -33,21 +58,19 @@ Or run the install script:
 ./install.sh
 ```
 
-**Dependencies:** Rust toolchain, ALSA dev libraries (`alsa-lib` on Arch, `libasound2-dev` on Debian).
-
-### Arch Linux
-
-Install via the install script or `cargo install --path .`. An AUR package may be available in the future.
+**Dependencies:** Rust toolchain, ALSA development libraries (`alsa-lib` on Arch, `libasound2-dev` on Debian).
 
 ## Usage
 
 ```bash
 vox                    # Launch the TUI
 vox scan ~/Music       # Scan a folder into the library
+vox list tracks        # List all tracks (CLI)
+vox search "keyword"   # Search the library (CLI)
 vox --help             # Show all commands
 ```
 
-### Keybindings
+### TUI Keybindings
 
 | Key | Action |
 |------|--------|
@@ -62,11 +85,19 @@ vox --help             # Show all commands
 | `m` / `M` | Mute / unmute |
 | `r` / `R` | Toggle repeat |
 | `s` / `S` | Toggle shuffle |
-| `/` | Add folder to library |
+| `/` | Add folder to library (scan) |
+| `x` | Remove tracked path from library |
 | `f` / `F` | Search tracks (title, artist, album) |
 | `d` / `D` | Remove selected album from library |
 | `q` / `Q` | Quit |
+| `Esc` | Cancel current input mode |
 | `Ctrl+C` | Force quit |
+
+### Input Modes
+
+- **Add folder** (`/`) — type or paste a path and press `Enter` to scan it into the library. The path is saved to `config.music_dirs` for easy removal later.
+- **Remove path** (`x`) — select from your tracked directories, press `Enter` to remove all tracks under that path from the library and config.
+- **Search** (`f` / `F`) — type a query to filter tracks by title, artist, or album. `↑`/`↓` to select, `Enter` to play, `Esc` to exit.
 
 ## Configuration
 
@@ -81,6 +112,8 @@ Config file: `~/.config/vox/config.json`
 }
 ```
 
+`music_dirs` is managed automatically when you add or remove folders through the TUI.
+
 ## Database
 
 The library database is stored at `~/.config/vox/library.db` (sled database). If you get a "database locked" error, delete this directory and re-scan.
@@ -90,8 +123,8 @@ The library database is stored at `~/.config/vox/library.db` (sled database). If
 - [ratatui](https://github.com/ratatui/ratatui) — TUI framework
 - [crossterm](https://github.com/crossterm-rs/crossterm) — terminal backend
 - [rodio](https://github.com/RustAudio/rodio) — audio playback
-- [lofty](https://github.com/Serial-ATA/lofty-rs) — metadata reading
-- [sled](https://github.com/spacejam/sled) — embedded database
+- [lofty](https://github.com/Serial-ATA/lofty-rs) — metadata reading and tag parsing
+- [sled](https://github.com/spacejam/sled) — embedded database engine
 - [clap](https://github.com/clap-rs/clap) — CLI argument parsing
 
 ## License
