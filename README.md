@@ -82,6 +82,7 @@ vox --help              # View all commands
 | `d` / `D` | Remove selected album |
 | `q` / `Q` | Quit |
 | `Esc` | Cancel current mode |
+| `Ctrl+R` | Rescan all tracked paths for new files |
 | `Ctrl+C` | Force quit |
 
 ### 🧭 Input Modes

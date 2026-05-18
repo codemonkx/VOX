@@ -623,6 +623,11 @@ impl App {
                 return Ok(());
             }
 
+            if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+                self.rescan_paths();
+                return Ok(());
+            }
+
             self.status_msg.clear();
 
             // Handle search input mode
@@ -903,6 +908,32 @@ impl App {
         self.status_msg = msg;
         self.refresh_library();
         Ok(())
+    }
+
+    fn rescan_paths(&mut self) {
+        let mut total_ok = 0;
+        let mut total_err = 0;
+        for dir in &self.config.music_dirs {
+            if dir.exists() {
+                match self.library.scan(dir) {
+                    Ok((ok, err)) => {
+                        total_ok += ok;
+                        total_err += err;
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        if total_ok > 0 || total_err > 0 {
+            let mut msg = format!(" Rescanned — added {total_ok} new tracks");
+            if total_err > 0 {
+                msg.push_str(&format!(" ({total_err} skipped)"));
+            }
+            self.status_msg = msg;
+        } else {
+            self.status_msg = " No new files found".into();
+        }
+        self.refresh_library();
     }
 
     fn play_selected_track(&mut self) {
