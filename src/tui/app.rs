@@ -650,17 +650,20 @@ impl App {
                         }
                     }
                     KeyCode::Enter => {
-                        let paths = self.remove_paths.clone();
+                        let sel = self.remove_path_selection;
                         self.input_mode = InputMode::None;
-                        if let Some(p) = paths.get(self.remove_path_selection) {
-                            let pp = std::path::Path::new(p);
-                            let prefix = pp.to_string_lossy().to_string();
+                        if let Some(p) = self.remove_paths.get(sel) {
+                            let prefix = std::path::Path::new(p).to_string_lossy().to_string();
                             let n = self.library.remove_by_prefix(&prefix).unwrap_or(0);
-                            self.status_msg = format!(" Removed {n} tracks from library");
                             if n > 0 {
-                                let _ = self.config.music_dirs.retain(|d| d.to_string_lossy() != prefix);
-                                let _ = self.config.save();
                                 self.refresh_library();
+                            }
+                            self.config.music_dirs.retain(|d| d.to_string_lossy() != prefix);
+                            self.config.save().ok();
+                            self.remove_paths.retain(|x| *x != prefix);
+                            self.status_msg = format!(" Removed {n} tracks from library");
+                            if self.remove_path_selection >= self.remove_paths.len() {
+                                self.remove_path_selection = self.remove_paths.len().saturating_sub(1);
                             }
                         }
                     }
