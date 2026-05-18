@@ -74,7 +74,7 @@ impl App {
             album_names,
             album_tracks: Vec::new(),
             selected_album: 0,
-            prev_album: 0,
+            prev_album: usize::MAX,
             selected_track: 0,
             focus: Focus::Albums,
             current_path: String::new(),
@@ -97,15 +97,16 @@ impl App {
             return;
         }
         self.prev_album = self.selected_album;
-        if let Some(album) = self.album_names.get(self.selected_album) {
-            self.album_tracks = self
+        self.album_tracks = match self.album_names.get(self.selected_album) {
+            Some(album) => self
                 .all_tracks
                 .iter()
                 .filter(|t| t.album == *album)
                 .cloned()
-                .collect();
-            self.selected_track = 0;
-        }
+                .collect(),
+            None => Vec::new(),
+        };
+        self.selected_track = 0;
     }
 
     pub fn run(&mut self) -> Result<()> {
