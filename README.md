@@ -95,7 +95,7 @@ vox --help             # Show all commands
 
 ### Input Modes
 
-- **Add folder** (`/`) — type or paste a path and press `Enter` to scan it into the library. The path is saved to `config.music_dirs` for easy removal later.
+- **Browse folders** (`/`) — navigate your filesystem with `↑`/`↓`, `Enter` to open a directory, `Esc` to go up / cancel. Press `s` to scan the current folder into the library.
 - **Remove path** (`x`) — select from your tracked directories, press `Enter` to remove all tracks under that path from the library and config.
 - **Search** (`f` / `F`) — type a query to filter tracks by title, artist, or album. `↑`/`↓` to select, `Enter` to play, `Esc` to exit.
 

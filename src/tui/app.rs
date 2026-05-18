@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,7 +22,7 @@ use crate::utils;
 
 enum InputMode {
     None,
-    Folder,
+    Browse,
     Search,
     RemovePath,
 }
@@ -45,12 +46,15 @@ pub struct App {
     exit: bool,
 
     input_mode: InputMode,
-    folder_input: String,
     remove_paths: Vec<String>,
     remove_path_selection: usize,
     search_query: String,
     search_results: Vec<Track>,
     status_msg: String,
+
+    browser_cwd: PathBuf,
+    browser_entries: Vec<(String, bool)>,
+    browser_selection: usize,
 }
 
 enum Focus {
@@ -64,6 +68,8 @@ impl App {
         let all_tracks = library.list_tracks().unwrap_or_default();
         let album_names = library.album_names().unwrap_or_default();
         let remove_paths = config.music_dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
+
+        let browser_cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
 
         let mut app = Self {
             library,
@@ -81,15 +87,38 @@ impl App {
             track_ended: false,
             exit: false,
             input_mode: InputMode::None,
-            folder_input: String::new(),
             remove_paths,
             remove_path_selection: 0,
             search_query: String::new(),
             search_results: Vec::new(),
             status_msg: String::new(),
+            browser_cwd,
+            browser_entries: Vec::new(),
+            browser_selection: 0,
         };
         app.load_album_tracks();
+        app.load_browser();
         Ok(app)
+    }
+
+    fn load_browser(&mut self) {
+        self.browser_entries.clear();
+        self.browser_selection = 0;
+
+        if self.browser_cwd.parent().is_some() {
+            self.browser_entries.push(("..".to_string(), true));
+        }
+
+        let mut dirs: Vec<(String, bool)> = match std::fs::read_dir(&self.browser_cwd) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .map(|e| (e.file_name().to_string_lossy().to_string(), true))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        self.browser_entries.append(&mut dirs);
     }
 
     fn load_album_tracks(&mut self) {
@@ -197,8 +226,8 @@ impl App {
 
     fn render_top_bar(&self, f: &mut Frame, area: Rect) {
         let msg = match self.input_mode {
-            InputMode::Folder => {
-                format!(" Add folder path: {}", self.folder_input)
+            InputMode::Browse => {
+                format!(" Select folder: {}", self.browser_cwd.display())
             }
             InputMode::RemovePath => {
                 format!(" Select path to remove ({}/{})", self.remove_path_selection + 1, self.remove_paths.len())
@@ -223,7 +252,7 @@ impl App {
             }
         };
         let style = match self.input_mode {
-            InputMode::Folder => Style::default().fg(Color::Black).bg(Color::Cyan),
+            InputMode::Browse => Style::default().fg(Color::Black).bg(Color::Cyan),
             InputMode::RemovePath => Style::default().fg(Color::Black).bg(Color::Red),
             InputMode::Search => Style::default().fg(Color::Black).bg(Color::Yellow),
             InputMode::None => Style::default().fg(Color::DarkGray),
@@ -235,6 +264,10 @@ impl App {
     fn render_left_panel(&self, f: &mut Frame, area: Rect) {
         if matches!(self.input_mode, InputMode::RemovePath) {
             self.render_remove_path_list(f, area);
+            return;
+        }
+        if matches!(self.input_mode, InputMode::Browse) {
+            self.render_browser(f, area);
             return;
         }
         let chunks = Layout::default()
@@ -462,6 +495,42 @@ impl App {
         f.render_widget(List::new(items), inner);
     }
 
+    fn render_browser(&self, f: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .title(" Browse folders ")
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .style(Style::default().fg(Color::Cyan));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let sel = self.browser_selection.min(self.browser_entries.len().saturating_sub(1));
+        let visible = inner.height as usize;
+        let scroll = if sel >= visible { sel - visible + 1 } else { 0 };
+
+        let items: Vec<ListItem> = self
+            .browser_entries
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible)
+            .map(|(i, (name, is_dir))| {
+                let prefix = if i == sel { "▸ " } else { "  " };
+                let display = if *is_dir { format!("{}/", name) } else { name.clone() };
+                let style = if i == sel {
+                    Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+                } else if *is_dir {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(format!("{prefix}{display}")).style(style)
+            })
+            .collect();
+
+        f.render_widget(List::new(items), inner);
+    }
+
     fn render_bottom_bar(&self, f: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -519,7 +588,7 @@ impl App {
 
     fn render_help_bar(&self, f: &mut Frame, area: Rect) {
         let msg = match self.input_mode {
-            InputMode::Folder => " [Enter] confirm  [Esc] cancel  type/paste folder path",
+            InputMode::Browse => " [↑↓] navigate  [Enter] open folder  [s] scan this folder  [Esc] go up / cancel",
             InputMode::RemovePath => " [↑↓] select  [Enter] remove from library  [Esc] cancel",
             InputMode::Search => " [Esc] cancel search  [↑↓] results  [Enter] play  type to search",
             InputMode::None => match self.focus {
@@ -591,49 +660,44 @@ impl App {
                 return Ok(());
             }
 
-            // Handle folder input mode
-            if matches!(self.input_mode, InputMode::Folder) {
+            // Handle browse mode
+            if matches!(self.input_mode, InputMode::Browse) {
                 match key.code {
                     KeyCode::Esc => {
-                        self.input_mode = InputMode::None;
-                        self.folder_input.clear();
-                    }
-                    KeyCode::Enter => {
-                        let path = self.folder_input.trim().to_string();
-                        self.folder_input.clear();
-                        self.input_mode = InputMode::None;
-                        if !path.is_empty() {
-                            let p = std::path::Path::new(&path);
-                            if p.exists() {
-                                self.status_msg = format!(" Scanning {path}...");
-                                match self.library.scan(p) {
-                                    Ok((n, errs)) => {
-                                        let path_str = path.clone();
-                                        if !self.config.music_dirs.iter().any(|d| d.to_string_lossy() == path_str) {
-                                            self.config.music_dirs.push(p.to_path_buf());
-                                            self.config.save().ok();
-                                        }
-                                        let mut msg = format!(" Added {n} tracks from {path}");
-                                        if errs > 0 {
-                                            msg.push_str(&format!(" ({errs} skipped)"));
-                                        }
-                                        self.status_msg = msg;
-                                        self.refresh_library();
-                                    }
-                                    Err(e) => {
-                                        self.status_msg = format!(" Error: {e}");
-                                    }
-                                }
-                            } else {
-                                self.status_msg = format!(" Path not found: {path}");
-                            }
+                        if self.browser_cwd.parent().is_some() {
+                            self.browser_cwd.pop();
+                            self.load_browser();
+                        } else {
+                            self.input_mode = InputMode::None;
                         }
                     }
-                    KeyCode::Backspace => {
-                        self.folder_input.pop();
+                    KeyCode::Enter => {
+                        if let Some((name, true)) = self.browser_entries.get(self.browser_selection) {
+                            if name == ".." {
+                                self.browser_cwd.pop();
+                            } else {
+                                self.browser_cwd.push(name);
+                            }
+                            self.load_browser();
+                        }
                     }
-                    KeyCode::Char(c) => {
-                        self.folder_input.push(c);
+                    KeyCode::Char('s') | KeyCode::Char('S') => {
+                        let path = self.browser_cwd.clone();
+                        self.input_mode = InputMode::None;
+                        self.status_msg = format!(" Scanning {}...", path.display());
+                        if let Err(e) = self.scan_path(&path) {
+                            self.status_msg = format!(" Error: {e}");
+                        }
+                    }
+                    KeyCode::Up => {
+                        if self.browser_selection > 0 {
+                            self.browser_selection -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if self.browser_selection + 1 < self.browser_entries.len() {
+                            self.browser_selection += 1;
+                        }
                     }
                     _ => {}
                 }
@@ -681,8 +745,9 @@ impl App {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.exit = true,
 
                 KeyCode::Char('/') => {
-                    self.input_mode = InputMode::Folder;
-                    self.folder_input.clear();
+                    self.input_mode = InputMode::Browse;
+                    self.browser_cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                    self.load_browser();
                     self.status_msg.clear();
                 }
 
@@ -821,6 +886,22 @@ impl App {
             _ => {}
         }
 
+        Ok(())
+    }
+
+    fn scan_path(&mut self, path: &std::path::Path) -> Result<()> {
+        let (n, errs) = self.library.scan(path)?;
+        let path_str = path.to_string_lossy().to_string();
+        if !self.config.music_dirs.iter().any(|d| d.to_string_lossy() == path_str) {
+            self.config.music_dirs.push(path.to_path_buf());
+            self.config.save().ok();
+        }
+        let mut msg = format!(" Added {n} tracks from {}", path.display());
+        if errs > 0 {
+            msg.push_str(&format!(" ({errs} skipped)"));
+        }
+        self.status_msg = msg;
+        self.refresh_library();
         Ok(())
     }
 
