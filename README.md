@@ -10,6 +10,7 @@ A terminal music player with an ncmpcpp-style TUI, written in Rust.
 - **Keyboard-driven** — vim-style navigation, fully mouseless
 - **Metadata panel** — title, artist, album, bitrate, sample rate, codec for the current track
 - **Now-playing indicators** — `♪` marks the current track and album in both panels
+- **Interactive file browser** — press `/` to navigate your filesystem and select folders to scan
 - **Library management** — scan folders, browse by album, search across all tracks, remove tracked paths
 - **Playback controls** — play/pause, next/previous, volume, mute, repeat, shuffle
 - **Progress bar** — real-time elapsed/total with visual progress indicator in the status bar
