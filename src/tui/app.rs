@@ -23,6 +23,7 @@ enum InputMode {
     None,
     Folder,
     Search,
+    RemovePath,
 }
 
 pub struct App {
@@ -45,6 +46,7 @@ pub struct App {
 
     input_mode: InputMode,
     folder_input: String,
+    remove_path_input: String,
     search_query: String,
     search_results: Vec<Track>,
     status_msg: String,
@@ -78,6 +80,7 @@ impl App {
             exit: false,
             input_mode: InputMode::None,
             folder_input: String::new(),
+            remove_path_input: String::new(),
             search_query: String::new(),
             search_results: Vec::new(),
             status_msg: String::new(),
@@ -193,6 +196,9 @@ impl App {
             InputMode::Folder => {
                 format!(" Add folder path: {}", self.folder_input)
             }
+            InputMode::RemovePath => {
+                format!(" Remove path: {}", self.remove_path_input)
+            }
             InputMode::Search => {
                 format!(" Search: {}", self.search_query)
             }
@@ -200,7 +206,7 @@ impl App {
                 if !self.status_msg.is_empty() {
                     format!(" {}", self.status_msg)
                 } else {
-                    let mut parts: Vec<String> = vec![" [/] add folder  [F] search".into()];
+                    let mut parts: Vec<String> = vec![" [/] add folder  [x] remove path  [F] search".into()];
                     if self.config.repeat {
                         parts.push(" 🔁 repeat".into());
                     }
@@ -214,6 +220,7 @@ impl App {
         };
         let style = match self.input_mode {
             InputMode::Folder => Style::default().fg(Color::Black).bg(Color::Cyan),
+            InputMode::RemovePath => Style::default().fg(Color::Black).bg(Color::Red),
             InputMode::Search => Style::default().fg(Color::Black).bg(Color::Yellow),
             InputMode::None => Style::default().fg(Color::DarkGray),
         };
@@ -463,6 +470,7 @@ impl App {
     fn render_help_bar(&self, f: &mut Frame, area: Rect) {
         let msg = match self.input_mode {
             InputMode::Folder => " [Enter] confirm  [Esc] cancel  type/paste folder path",
+            InputMode::RemovePath => " [Enter] confirm  [Esc] cancel  type/paste path to remove",
             InputMode::Search => " [Esc] cancel search  [↑↓] results  [Enter] play  type to search",
             InputMode::None => match self.focus {
                 Focus::Albums => " [/] add folder  [F] search  [D] remove album  [←→/Tab] switch  [↑↓] browse  [Enter] select  [k/Space] pause  [Q] quit",
@@ -573,12 +581,54 @@ impl App {
                 return Ok(());
             }
 
+            // Handle remove path input mode
+            if matches!(self.input_mode, InputMode::RemovePath) {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.input_mode = InputMode::None;
+                        self.remove_path_input.clear();
+                    }
+                    KeyCode::Enter => {
+                        let path = self.remove_path_input.trim().to_string();
+                        self.remove_path_input.clear();
+                        self.input_mode = InputMode::None;
+                        if !path.is_empty() {
+                            let p = std::path::Path::new(&path);
+                            let prefix = if p.exists() {
+                                p.canonicalize().map(|c| c.to_string_lossy().to_string()).unwrap_or(path.clone())
+                            } else {
+                                path.clone()
+                            };
+                            let n = self.library.remove_by_prefix(&prefix).unwrap_or(0);
+                            self.status_msg = format!(" Removed {n} tracks from library");
+                            if n > 0 {
+                                self.refresh_library();
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        self.remove_path_input.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        self.remove_path_input.push(c);
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+
             match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.exit = true,
 
                 KeyCode::Char('/') => {
                     self.input_mode = InputMode::Folder;
                     self.folder_input.clear();
+                    self.status_msg.clear();
+                }
+
+                KeyCode::Char('x') | KeyCode::Char('X') => {
+                    self.input_mode = InputMode::RemovePath;
+                    self.remove_path_input.clear();
                     self.status_msg.clear();
                 }
 
