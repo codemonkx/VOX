@@ -49,6 +49,7 @@ impl Database {
         for path in &to_remove {
             self.db.remove(path.as_bytes())?;
         }
+        self.db.flush()?;
         Ok(count)
     }
 
@@ -115,4 +116,8 @@ impl Database {
         Ok(self.db.len() as u64)
     }
 
+    pub fn flush(&self) -> Result<()> {
+        self.db.flush()?;
+        Ok(())
+    }
 }
