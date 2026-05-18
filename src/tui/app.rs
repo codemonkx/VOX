@@ -46,7 +46,8 @@ pub struct App {
 
     input_mode: InputMode,
     folder_input: String,
-    remove_path_input: String,
+    remove_paths: Vec<String>,
+    remove_path_selection: usize,
     search_query: String,
     search_results: Vec<Track>,
     status_msg: String,
@@ -62,6 +63,7 @@ impl App {
         let library = Library::new(db);
         let all_tracks = library.list_tracks().unwrap_or_default();
         let album_names = library.album_names().unwrap_or_default();
+        let remove_paths = config.music_dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
 
         let mut app = Self {
             library,
@@ -80,7 +82,8 @@ impl App {
             exit: false,
             input_mode: InputMode::None,
             folder_input: String::new(),
-            remove_path_input: String::new(),
+            remove_paths,
+            remove_path_selection: 0,
             search_query: String::new(),
             search_results: Vec::new(),
             status_msg: String::new(),
@@ -197,7 +200,7 @@ impl App {
                 format!(" Add folder path: {}", self.folder_input)
             }
             InputMode::RemovePath => {
-                format!(" Remove path: {}", self.remove_path_input)
+                format!(" Select path to remove ({}/{})", self.remove_path_selection + 1, self.remove_paths.len())
             }
             InputMode::Search => {
                 format!(" Search: {}", self.search_query)
@@ -229,6 +232,10 @@ impl App {
     }
 
     fn render_left_panel(&self, f: &mut Frame, area: Rect) {
+        if matches!(self.input_mode, InputMode::RemovePath) {
+            self.render_remove_path_list(f, area);
+            return;
+        }
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(10), Constraint::Min(1)])
@@ -412,6 +419,46 @@ impl App {
         f.render_widget(List::new(items), inner);
     }
 
+    fn render_remove_path_list(&self, f: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .title(" Remove tracked paths ")
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .style(Style::default().fg(Color::Red));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        if self.remove_paths.is_empty() {
+            let empty = Paragraph::new(" No tracked paths. Add one with [/].")
+                .style(Style::default().fg(Color::DarkGray));
+            f.render_widget(empty, inner);
+            return;
+        }
+
+        let sel = self.remove_path_selection.min(self.remove_paths.len().saturating_sub(1));
+        let visible = inner.height as usize;
+        let scroll = if sel >= visible { sel - visible + 1 } else { 0 };
+
+        let items: Vec<ListItem> = self
+            .remove_paths
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible)
+            .map(|(i, p)| {
+                let prefix = if i == sel { "▸ " } else { "  " };
+                let style = if i == sel {
+                    Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(format!("{prefix}{p}")).style(style)
+            })
+            .collect();
+
+        f.render_widget(List::new(items), inner);
+    }
+
     fn render_bottom_bar(&self, f: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -470,7 +517,7 @@ impl App {
     fn render_help_bar(&self, f: &mut Frame, area: Rect) {
         let msg = match self.input_mode {
             InputMode::Folder => " [Enter] confirm  [Esc] cancel  type/paste folder path",
-            InputMode::RemovePath => " [Enter] confirm  [Esc] cancel  type/paste path to remove",
+            InputMode::RemovePath => " [↑↓] select  [Enter] remove from library  [Esc] cancel",
             InputMode::Search => " [Esc] cancel search  [↑↓] results  [Enter] play  type to search",
             InputMode::None => match self.focus {
                 Focus::Albums => " [/] add folder  [F] search  [D] remove album  [←→/Tab] switch  [↑↓] browse  [Enter] select  [k/Space] pause  [Q] quit",
@@ -558,6 +605,11 @@ impl App {
                                 self.status_msg = format!(" Scanning {path}...");
                                 match self.library.scan(p) {
                                     Ok(n) => {
+                                        let path_str = path.clone();
+                                        if !self.config.music_dirs.iter().any(|d| d.to_string_lossy() == path_str) {
+                                            self.config.music_dirs.push(p.to_path_buf());
+                                            self.config.save().ok();
+                                        }
                                         self.status_msg = format!(" Added {n} tracks from {path}");
                                         self.refresh_library();
                                     }
@@ -586,31 +638,31 @@ impl App {
                 match key.code {
                     KeyCode::Esc => {
                         self.input_mode = InputMode::None;
-                        self.remove_path_input.clear();
+                    }
+                    KeyCode::Up => {
+                        if self.remove_path_selection > 0 {
+                            self.remove_path_selection -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if self.remove_path_selection + 1 < self.remove_paths.len() {
+                            self.remove_path_selection += 1;
+                        }
                     }
                     KeyCode::Enter => {
-                        let path = self.remove_path_input.trim().to_string();
-                        self.remove_path_input.clear();
+                        let paths = self.remove_paths.clone();
                         self.input_mode = InputMode::None;
-                        if !path.is_empty() {
-                            let p = std::path::Path::new(&path);
-                            let prefix = if p.exists() {
-                                p.canonicalize().map(|c| c.to_string_lossy().to_string()).unwrap_or(path.clone())
-                            } else {
-                                path.clone()
-                            };
+                        if let Some(p) = paths.get(self.remove_path_selection) {
+                            let pp = std::path::Path::new(p);
+                            let prefix = pp.to_string_lossy().to_string();
                             let n = self.library.remove_by_prefix(&prefix).unwrap_or(0);
                             self.status_msg = format!(" Removed {n} tracks from library");
                             if n > 0 {
+                                let _ = self.config.music_dirs.retain(|d| d.to_string_lossy() != prefix);
+                                let _ = self.config.save();
                                 self.refresh_library();
                             }
                         }
-                    }
-                    KeyCode::Backspace => {
-                        self.remove_path_input.pop();
-                    }
-                    KeyCode::Char(c) => {
-                        self.remove_path_input.push(c);
                     }
                     _ => {}
                 }
@@ -628,7 +680,8 @@ impl App {
 
                 KeyCode::Char('x') | KeyCode::Char('X') => {
                     self.input_mode = InputMode::RemovePath;
-                    self.remove_path_input.clear();
+                    self.remove_paths = self.config.music_dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
+                    self.remove_path_selection = 0;
                     self.status_msg.clear();
                 }
 
