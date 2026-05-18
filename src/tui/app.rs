@@ -162,11 +162,11 @@ impl App {
     fn refresh_library(&mut self) {
         self.all_tracks = self.library.list_tracks().unwrap_or_default();
         self.album_names = self.library.album_names().unwrap_or_default();
-        self.prev_album = usize::MAX;
-        self.load_album_tracks();
         if self.selected_album >= self.album_names.len() {
             self.selected_album = self.album_names.len().saturating_sub(1);
         }
+        self.prev_album = usize::MAX;
+        self.load_album_tracks();
     }
 
     fn render(&mut self, f: &mut Frame) {
