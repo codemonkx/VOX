@@ -911,28 +911,30 @@ impl App {
     }
 
     fn rescan_paths(&mut self) {
-        let mut total_ok = 0;
-        let mut total_err = 0;
+        let mut total_removed = 0;
+        let mut total_added = 0;
+        let mut total_errors = 0;
         for dir in &self.config.music_dirs {
-            if dir.exists() {
-                match self.library.scan(dir) {
-                    Ok((ok, err)) => {
-                        total_ok += ok;
-                        total_err += err;
-                    }
-                    Err(_) => {}
+            if !dir.exists() {
+                continue;
+            }
+            let prefix = dir.to_string_lossy().to_string();
+            total_removed += self.library.remove_by_prefix(&prefix).unwrap_or(0);
+            match self.library.scan(dir) {
+                Ok((added, errors)) => {
+                    total_added += added;
+                    total_errors += errors;
                 }
+                Err(_) => {}
             }
         }
-        if total_ok > 0 || total_err > 0 {
-            let mut msg = format!(" Rescanned — added {total_ok} new tracks");
-            if total_err > 0 {
-                msg.push_str(&format!(" ({total_err} skipped)"));
-            }
-            self.status_msg = msg;
-        } else {
-            self.status_msg = " No new files found".into();
+        let mut msg = format!(
+            " Rescanned — {total_removed} tracks refreshed, {total_added} new"
+        );
+        if total_errors > 0 {
+            msg.push_str(&format!(" ({total_errors} skipped)"));
         }
+        self.status_msg = msg;
         self.refresh_library();
     }
 
