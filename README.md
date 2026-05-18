@@ -46,7 +46,7 @@ A terminal music player with an ncmpcpp-style TUI, written in Rust.
 ### From source
 
 ```bash
-git clone https://github.com/codemonkx/VOX.git
+git clone https://github.com/CodeMonkX/VOX.git
 cd VOX
 cargo build --release
 cp target/release/vox ~/.local/bin/
