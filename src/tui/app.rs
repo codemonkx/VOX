@@ -3,8 +3,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEventKind,
+};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -610,7 +613,54 @@ impl App {
 
         let event = event::read()?;
         match event {
-            Event::Mouse(_m) => {
+            Event::Mouse(m) => {
+                if m.kind == MouseEventKind::Down(MouseButton::Left) {
+                    let (term_w, term_h) = size().unwrap_or((80, 24));
+                    let main_h = term_h.saturating_sub(5);
+                    let left_w = term_w * 38 / 100;
+
+                    let col = m.column;
+                    let row = m.row;
+
+                    if row >= 1 && row < 1 + main_h {
+                        if col >= left_w {
+                            // Right panel → album list
+                            self.focus = Focus::Albums;
+                            let inner_top = 2;
+                            if row >= inner_top {
+                                let visible = (main_h - 2) as usize;
+                                let scroll = if self.selected_album >= visible.saturating_add(1) {
+                                    self.selected_album - visible + 1
+                                } else {
+                                    0
+                                };
+                                let idx = scroll + (row - inner_top) as usize;
+                                if idx < self.album_names.len() {
+                                    self.selected_album = idx;
+                                    self.load_album_tracks();
+                                }
+                            }
+                        } else {
+                            // Left panel → track list
+                            self.focus = Focus::Tracks;
+                            let meta_h = 10u16;
+                            let track_top = 1 + meta_h;
+                            let inner_top = track_top + 1;
+                            if row >= inner_top {
+                                let track_area = (main_h - meta_h - 2) as usize;
+                                let scroll = if self.selected_track >= track_area.saturating_add(1) {
+                                    self.selected_track - track_area + 1
+                                } else {
+                                    0
+                                };
+                                let idx = scroll + (row - inner_top) as usize;
+                                if idx < self.album_tracks.len() {
+                                    self.selected_track = idx;
+                                }
+                            }
+                        }
+                    }
+                }
                 return Ok(());
             }
             Event::Key(key) => {
