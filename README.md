@@ -21,26 +21,7 @@ A terminal music player with an ncmpcpp-style TUI, written in Rust.
 
 ## Screenshot
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  [/] add folder  [x] remove path  [F] search  🔁  🔀  | Q  │
-├───────────────┬──────────────────────────────────────────────┤
-│  Name:   Song │  Albums                                      │
-│  Album:  ...  │  ▸ Album Name 1  (12 tracks) ♪              │
-│  Length: 3:42 │    Album Name 2  (8 tracks)                  │
-│  Bitrate: 320 │    Album Name 3  (15 tracks)                 │
-│  Sample: 44.1k│                                              │
-│  Artist: ...  │                                              │
-│               │                                              │
-│  ▸ 01. Song ♪ │                                              │
-│    02. Song   │                                              │
-│    03. Song   │                                              │
-├───────────────┴──────────────────────────────────────────────┤
-│  130 items  ▸ Song — Artist  ▸  Vol: 80% FLAC | 1:23 ████░  │
-├──────────────────────────────────────────────────────────────┤
-│  [/] add folder  [F] search  [D] remove album  [Tab] switch  │
-└──────────────────────────────────────────────────────────────┘
-```
+![VOX TUI](screenshots/Pasted%20image.png)
 
 ## Installation
 
