@@ -107,8 +107,12 @@ fn cmd_scan(folder: Option<&str>, library: &Library) -> Result<()> {
         anyhow::bail!("Folder '{folder}' does not exist");
     }
     println!("Scanning {folder}...");
-    let count = library.scan(path)?;
-    println!("Scanned {count} tracks into library");
+    let (ok, err) = library.scan(path)?;
+    let mut msg = format!("Scanned {ok} tracks into library");
+    if err > 0 {
+        msg.push_str(&format!(" ({err} skipped)"));
+    }
+    println!("{msg}");
     Ok(())
 }
 

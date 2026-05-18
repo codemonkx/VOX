@@ -452,7 +452,9 @@ impl App {
                 } else {
                     Style::default().fg(Color::White)
                 };
-                ListItem::new(format!("{prefix}{p}")).style(style)
+                let max_w = inner.width.saturating_sub(3) as usize;
+                let display = truncate_path(p, max_w);
+                ListItem::new(format!("{prefix}{display}")).style(style)
             })
             .collect();
 
@@ -604,13 +606,17 @@ impl App {
                             if p.exists() {
                                 self.status_msg = format!(" Scanning {path}...");
                                 match self.library.scan(p) {
-                                    Ok(n) => {
+                                    Ok((n, errs)) => {
                                         let path_str = path.clone();
                                         if !self.config.music_dirs.iter().any(|d| d.to_string_lossy() == path_str) {
                                             self.config.music_dirs.push(p.to_path_buf());
                                             self.config.save().ok();
                                         }
-                                        self.status_msg = format!(" Added {n} tracks from {path}");
+                                        let mut msg = format!(" Added {n} tracks from {path}");
+                                        if errs > 0 {
+                                            msg.push_str(&format!(" ({errs} skipped)"));
+                                        }
+                                        self.status_msg = msg;
                                         self.refresh_library();
                                     }
                                     Err(e) => {
@@ -903,4 +909,12 @@ impl App {
         };
         self.selected_track = 0;
     }
+}
+
+fn truncate_path(p: &str, max_w: usize) -> String {
+    if max_w < 3 || p.len() <= max_w {
+        return p.to_string();
+    }
+    let keep = max_w.saturating_sub(2);
+    format!("..{}", &p[p.len().saturating_sub(keep)..])
 }

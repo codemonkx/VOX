@@ -16,8 +16,9 @@ impl Library {
         Self { db }
     }
 
-    pub fn scan(&self, folder: &Path) -> Result<usize> {
-        let mut count = 0;
+    pub fn scan(&self, folder: &Path) -> Result<(usize, usize)> {
+        let mut ok = 0;
+        let mut err = 0;
         for entry in WalkDir::new(folder).follow_links(true) {
             let entry = entry?;
             if !entry.file_type().is_file() {
@@ -30,14 +31,14 @@ impl Library {
             match metadata::read_track(path) {
                 Ok(track) => {
                     self.db.store_track(&track)?;
-                    count += 1;
+                    ok += 1;
                 }
-                Err(e) => {
-                    eprintln!("  Skipping {}: {e}", path.display());
+                Err(_) => {
+                    err += 1;
                 }
             }
         }
-        Ok(count)
+        Ok((ok, err))
     }
 
     pub fn list_tracks(&self) -> Result<Vec<Track>> {
