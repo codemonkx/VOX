@@ -655,13 +655,11 @@ impl App {
                         if let Some(p) = self.remove_paths.get(sel) {
                             let prefix = std::path::Path::new(p).to_string_lossy().to_string();
                             let n = self.library.remove_by_prefix(&prefix).unwrap_or(0);
-                            if n > 0 {
-                                self.refresh_library();
-                            }
+                            self.refresh_library();
                             self.config.music_dirs.retain(|d| d.to_string_lossy() != prefix);
                             self.config.save().ok();
                             self.remove_paths.retain(|x| *x != prefix);
-                            self.status_msg = format!(" Removed {n} tracks from library");
+                            self.status_msg = format!(" Removed {n} tracks");
                             if self.remove_path_selection >= self.remove_paths.len() {
                                 self.remove_path_selection = self.remove_paths.len().saturating_sub(1);
                             }
