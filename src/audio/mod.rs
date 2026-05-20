@@ -1,12 +1,12 @@
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 pub struct Player {
@@ -79,8 +79,27 @@ impl Player {
 
         *self.current_path.lock().unwrap() = Some(path.to_string_lossy().to_string());
 
-        let file = File::open(path)?;
-        let source = Decoder::new(BufReader::new(file))?;
+        let is_dsf = path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("dsf"))
+            .unwrap_or(false);
+
+        let source: Box<dyn Source<Item = f32> + Send> = if is_dsf {
+            let output = std::process::Command::new("ffmpeg")
+                .args(["-i", &path.to_string_lossy(), "-f", "wav", "-"])
+                .output()
+                .context("Failed to run ffmpeg for DSF decoding")?;
+
+            if !output.status.success() {
+                anyhow::bail!("ffmpeg failed to decode DSF file");
+            }
+
+            Box::new(Decoder::new(Cursor::new(output.stdout))?.convert_samples::<f32>())
+        } else {
+            let file = File::open(path)?;
+            Box::new(Decoder::new(BufReader::new(file))?.convert_samples::<f32>())
+        };
+
         let duration = duration_override
             .or_else(|| source.total_duration().map(|d| d.as_secs_f64()))
             .unwrap_or(0.0);
@@ -130,13 +149,38 @@ impl Player {
         let dur = *self.current_duration.lock().unwrap();
         let target = seconds.min(dur).max(0.0);
 
-        let file = match File::open(Path::new(&path_str)) {
-            Ok(f) => f,
-            Err(_) => return,
-        };
-        let source = match Decoder::new(BufReader::new(file)) {
-            Ok(s) => s,
-            Err(_) => return,
+        let source: Box<dyn Source<Item = f32> + Send> = {
+            let is_dsf = std::path::Path::new(&path_str)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("dsf"))
+                .unwrap_or(false);
+
+            if is_dsf {
+                let output = match std::process::Command::new("ffmpeg")
+                    .args(["-i", &path_str, "-f", "wav", "-"])
+                    .output()
+                {
+                    Ok(o) => o,
+                    Err(_) => return,
+                };
+                if !output.status.success() {
+                    return;
+                }
+                match Decoder::new(Cursor::new(output.stdout)) {
+                    Ok(d) => Box::new(d.convert_samples::<f32>()),
+                    Err(_) => return,
+                }
+            } else {
+                let file = match File::open(Path::new(&path_str)) {
+                    Ok(f) => f,
+                    Err(_) => return,
+                };
+                match Decoder::new(BufReader::new(file)) {
+                    Ok(d) => Box::new(d.convert_samples::<f32>()),
+                    Err(_) => return,
+                }
+            }
         };
 
         let was_paused = self.is_paused();
