@@ -23,7 +23,7 @@
 - **Progress bar** — visual elapsed/total with codec and bitrate info
 - **Persistent state** — volume, shuffle, repeat, and music dirs saved to config automatically
 - **Fast library** — embedded [sled](https://github.com/spacejam/sled) database, no external server needed
-- **Format support** — FLAC, MP3, WAV, OGG, Opus, AAC, AIFF, M4A
+- **Format support** — FLAC, MP3, WAV, OGG, Opus, AAC, AIFF, M4A, **DSD/DSF**
 
 ---
 

@@ -123,9 +123,9 @@ fn read_with_ffprobe(path: &Path) -> Result<Track> {
         .unwrap_or(0);
 
     let codec_name = stream["codec_name"].as_str().unwrap_or("unknown");
-    let codec = match codec_name {
-        "dsd_lsbf_planar" | "dsd_lsbf" | "dsd_msbf_planar" | "dsd_msbf" => "DSD",
-        _ => codec_name.to_uppercase(),
+    let codec: String = match codec_name {
+        "dsd_lsbf_planar" | "dsd_lsbf" | "dsd_msbf_planar" | "dsd_msbf" => "DSD".into(),
+        other => other.to_uppercase(),
     };
 
     Ok(Track {
