@@ -1022,7 +1022,12 @@ impl App {
         }
         self.current_path = track.path.clone();
         self.current_meta = Some(track.clone());
-        self.player.play(pref, Some(track.duration)).ok();
+        match self.player.play(pref, Some(track.duration)) {
+            Ok(()) => {}
+            Err(e) => {
+                self.status_msg = format!(" Playback error: {e}");
+            }
+        }
     }
 
     fn next_track(&mut self) {
