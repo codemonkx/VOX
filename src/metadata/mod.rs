@@ -22,47 +22,119 @@ pub struct Track {
 }
 
 pub fn read_track(path: &Path) -> Result<Track> {
-    let file = read_from_path(path).context("Failed to read audio file")?;
-    let properties = file.properties();
-    let tag = file.tags().first().cloned();
+    match read_from_path(path) {
+        Ok(file) => {
+            let properties = file.properties();
+            let tag = file.tags().first().cloned();
 
-    let title = tag
-        .as_ref()
-        .and_then(|t| t.title())
-        .unwrap_or_default()
-        .to_string();
-    let artist = tag
-        .as_ref()
-        .and_then(|t| t.artist())
-        .unwrap_or_default()
-        .to_string();
-    let album = tag
-        .as_ref()
-        .and_then(|t| t.album())
-        .unwrap_or_default()
-        .to_string();
-    let genre = tag
-        .as_ref()
-        .and_then(|t| t.genre().map(|g| g.to_string()))
-        .unwrap_or_default();
-    let year = tag
-        .as_ref()
-        .and_then(|t| t.year())
-        .map(|y| y as i32)
+            let title = tag
+                .as_ref()
+                .and_then(|t| t.title())
+                .unwrap_or_default()
+                .to_string();
+            let artist = tag
+                .as_ref()
+                .and_then(|t| t.artist())
+                .unwrap_or_default()
+                .to_string();
+            let album = tag
+                .as_ref()
+                .and_then(|t| t.album())
+                .unwrap_or_default()
+                .to_string();
+            let genre = tag
+                .as_ref()
+                .and_then(|t| t.genre().map(|g| g.to_string()))
+                .unwrap_or_default();
+            let year = tag
+                .as_ref()
+                .and_then(|t| t.year())
+                .map(|y| y as i32)
+                .unwrap_or(0);
+
+            let duration = properties.duration().as_secs_f64();
+            let bitrate = properties.audio_bitrate().unwrap_or(0);
+            let sample_rate = properties.sample_rate().unwrap_or(0);
+            let codec = format_codec(file.file_type());
+
+            Ok(Track {
+                path: path.to_string_lossy().to_string(),
+                title,
+                artist,
+                album,
+                genre,
+                year,
+                duration,
+                bitrate,
+                sample_rate,
+                codec,
+            })
+        }
+        Err(_) => read_with_ffprobe(path),
+    }
+}
+
+fn read_with_ffprobe(path: &Path) -> Result<Track> {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+        ])
+        .arg(path)
+        .output()
+        .context("Failed to run ffprobe")?;
+
+    if !output.status.success() {
+        anyhow::bail!("ffprobe returned error");
+    }
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse ffprobe output")?;
+
+    let format = &json["format"];
+    let stream = json["streams"].as_array()
+        .and_then(|s| s.first())
+        .unwrap_or(&serde_json::Value::Null);
+
+    let extract = |field: &str| -> String {
+        format["tags"][field]
+            .as_str()
+            .or_else(|| stream["tags"][field].as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    let title = extract("title");
+    let artist = extract("artist");
+    let album = extract("album");
+
+    let duration: f64 = format["duration"].as_str()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+
+    let bitrate: u32 = format["bit_rate"].as_str()
+        .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let duration = properties.duration().as_secs_f64();
-    let bitrate = properties.audio_bitrate().unwrap_or(0);
-    let sample_rate = properties.sample_rate().unwrap_or(0);
-    let codec = format_codec(file.file_type());
+    let sample_rate: u32 = stream["sample_rate"].as_str()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    let codec_name = stream["codec_name"].as_str().unwrap_or("unknown");
+    let codec = match codec_name {
+        "dsd_lsbf_planar" | "dsd_lsbf" | "dsd_msbf_planar" | "dsd_msbf" => "DSD",
+        _ => codec_name.to_uppercase(),
+    };
 
     Ok(Track {
         path: path.to_string_lossy().to_string(),
         title,
         artist,
         album,
-        genre,
-        year,
+        genre: extract("genre"),
+        year: extract("date").parse().unwrap_or(0),
         duration,
         bitrate,
         sample_rate,
@@ -84,7 +156,7 @@ fn format_codec(ft: FileType) -> String {
     }
 }
 
-const SUPPORTED_EXTENSIONS: &[&str] = &["mp3", "flac", "wav", "ogg", "m4a", "aac", "opus"];
+const SUPPORTED_EXTENSIONS: &[&str] = &["mp3", "flac", "wav", "ogg", "m4a", "aac", "opus", "dsf", "aiff"];
 
 pub fn is_supported(path: &Path) -> bool {
     path.extension()
