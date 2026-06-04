@@ -339,7 +339,7 @@ impl App {
 
         let main_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
             .split(chunks[1]);
 
         self.render_left_panel(f, main_chunks[0]);
@@ -760,7 +760,7 @@ impl App {
 
                     let (term_w, term_h) = size().unwrap_or((80, 24));
                     let main_h = term_h.saturating_sub(5);
-                    let left_w = term_w * 38 / 100;
+                    let left_w = term_w * 45 / 100;
 
                     let col = m.column;
                     let row = m.row;
