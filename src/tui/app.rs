@@ -488,7 +488,11 @@ impl App {
         f.render_widget(block, area);
 
         if tracks.is_empty() {
-            let empty = Paragraph::new(if in_search { " No results" } else { " No tracks" })
+            let empty = Paragraph::new(
+                if in_search { "  No results" }
+                else if self.album_info.is_empty() { "  Select an album on the right" }
+                else { "  No tracks" }
+            )
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(empty, inner);
             return;
@@ -564,8 +568,8 @@ impl App {
         f.render_widget(block, area);
 
         if self.album_info.is_empty() {
-            let empty = Paragraph::new(" No albums found. Run `music scan <folder>`")
-                .style(Style::default().fg(Color::DarkGray));
+            let empty = Paragraph::new("  ⚠  No albums in library  ⚠\n\n  Press [/] to add a music folder\n  then [s] to scan it")
+                .style(Style::default().fg(Color::Yellow));
             f.render_widget(empty, inner);
             return;
         }
