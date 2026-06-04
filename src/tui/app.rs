@@ -501,7 +501,8 @@ impl App {
             0
         };
 
-        let title_w = inner.width.saturating_sub(14) as usize;
+        let num_w = tracks.len().to_string().len();
+        let title_w = inner.width.saturating_sub(num_w as u16 + 12) as usize;
 
         let items: Vec<ListItem> = tracks
             .iter()
@@ -510,7 +511,7 @@ impl App {
             .take(visible)
             .map(|(i, t)| {
                 let prefix = if i == sel { "▸ " } else { "  " };
-                let num = format!("{:02}.", i + 1);
+                let num = format!("{:>num_w$}.", i + 1, num_w = num_w);
                 let dur = utils::format_duration(t.duration);
                 let is_playing = t.path == self.current_path;
                 let now = if is_playing { " ▶" } else { "" };
