@@ -94,24 +94,9 @@ impl Player {
             *self.dsf_cache.lock().unwrap() = None;
         }
 
-        // For DSF always resample via ffmpeg (DSD rates never device-supported).
-        // For non-DSF, try to open stream at source rate for bit-perfect (no resampling).
-        // Falls back to default rate if device doesn't support the source rate.
-        let handle = if !is_dsf && source_rate > 0 {
-            let h = match create_stream_at_rate(source_rate) {
-                Ok((s, h)) => {
-                    *self._stream.lock().unwrap() = Some(s);
-                    *self.stream_handle.lock().unwrap() = Some(h.clone());
-                    h
-                }
-                Err(_) => self.stream_handle.lock().unwrap().clone()
-                    .ok_or_else(|| anyhow::anyhow!("no stream handle"))?,
-            };
-            h
-        } else {
-            self.stream_handle.lock().unwrap().clone()
-                .ok_or_else(|| anyhow::anyhow!("no stream handle"))?
-        };
+        // Use the default output stream (rodio handles sample rate conversion).
+        let handle = self.stream_handle.lock().unwrap().clone()
+            .ok_or_else(|| anyhow::anyhow!("no stream handle"))?;
 
         let source: Box<dyn Source<Item = i16> + Send> = if is_dsf {
             let rate = current_device_rate();
@@ -184,15 +169,6 @@ impl Player {
 
         let dur = *self.current_duration.lock().unwrap();
         let target = seconds.min(dur).max(0.0);
-        let rate = *self.current_rate.lock().unwrap();
-
-        // Try to open stream at source rate for bit-perfect seek
-        if rate > 0 {
-            if let Ok((s, h)) = create_stream_at_rate(rate) {
-                *self._stream.lock().unwrap() = Some(s);
-                *self.stream_handle.lock().unwrap() = Some(h);
-            }
-        }
 
         let source: Box<dyn Source<Item = i16> + Send> = {
             let is_dsf = std::path::Path::new(&path_str)
@@ -462,29 +438,6 @@ fn current_device_rate() -> u32 {
         }
     }
     48000
-}
-
-fn create_stream_at_rate(rate: u32) -> Result<(OutputStream, OutputStreamHandle)> {
-    let host = rodio::cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| anyhow::anyhow!("no output device"))?;
-
-    let config = device
-        .supported_output_configs()
-        .map_err(|e| anyhow::anyhow!("{e:?}"))?
-        .find(|c| {
-            let min = c.min_sample_rate().0;
-            let max = c.max_sample_rate().0;
-            min <= rate && max >= rate
-        })
-        .map(|c| c.with_sample_rate(rodio::cpal::SampleRate(rate)))
-        .ok_or_else(|| anyhow::anyhow!("rate {rate} not supported by device"))?;
-
-    let (stream, handle) =
-        OutputStream::try_from_device_config(&device, config)
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-    Ok((stream, handle))
 }
 
 fn patch_wav_header(data: &mut [u8]) {
