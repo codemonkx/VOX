@@ -512,9 +512,12 @@ impl App {
                 let prefix = if i == sel { "▸ " } else { "  " };
                 let num = format!("{:02}.", i + 1);
                 let dur = utils::format_duration(t.duration);
-                let now = if t.path == self.current_path { " ♪" } else { "" };
+                let is_playing = t.path == self.current_path;
+                let now = if is_playing { " ▶" } else { "" };
                 let content = format!("{prefix}{num} {:<title_w$} {:>5}{now}", t.title, dur, title_w = title_w);
-                let style = if i == sel {
+                let style = if is_playing && i != sel {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                } else if i == sel {
                     if matches!(self.focus, Focus::Tracks) || in_search {
                         Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
                     } else {
