@@ -532,6 +532,22 @@ impl App {
             .collect();
 
         f.render_widget(List::new(items), inner);
+
+        let hidden = tracks.len().saturating_sub(scroll + visible);
+        if hidden > 0 {
+            let hint = format!(" ↓ {} more ", hidden);
+            let hint_w = hint.len() as u16;
+            let hint_area = Rect::new(
+                inner.right().saturating_sub(hint_w + 1),
+                inner.bottom().saturating_sub(1),
+                hint_w,
+                1,
+            );
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)))),
+                hint_area,
+            );
+        }
     }
 
     fn render_right_panel(&self, f: &mut Frame, area: Rect) {
@@ -585,6 +601,22 @@ impl App {
             .collect();
 
         f.render_widget(List::new(items), inner);
+
+        let hidden = self.album_info.len().saturating_sub(scroll + visible);
+        if hidden > 0 {
+            let hint = format!(" ↓ {} more ", hidden);
+            let hint_w = hint.len() as u16;
+            let hint_area = Rect::new(
+                inner.right().saturating_sub(hint_w + 1),
+                inner.bottom().saturating_sub(1),
+                hint_w,
+                1,
+            );
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)))),
+                hint_area,
+            );
+        }
     }
 
     fn render_remove_path_list(&self, f: &mut Frame, area: Rect) {
