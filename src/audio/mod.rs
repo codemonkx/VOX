@@ -134,8 +134,9 @@ impl Player {
             Box::new(Decoder::new(BufReader::new(file))?)
         };
 
-        let duration = duration_override
-            .or_else(|| source.total_duration().map(|d| d.as_secs_f64()))
+        let duration = source.total_duration()
+            .map(|d| d.as_secs_f64())
+            .or(duration_override)
             .unwrap_or(0.0);
 
         if is_dsf {
