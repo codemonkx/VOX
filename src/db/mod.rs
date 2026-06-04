@@ -7,18 +7,22 @@ use crate::metadata::Track;
 
 pub struct Database {
     db: Db,
+    albums: sled::Tree,
 }
 
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let db = sled::open(path).context("Failed to open database")?;
-        Ok(Self { db })
+        let albums = db.open_tree("albums")?;
+        Ok(Self { db, albums })
     }
 
     pub fn store_track(&self, track: &Track) -> Result<()> {
         let key = track.path.as_bytes();
         let value = serde_json::to_vec(track)?;
         self.db.insert(key, value)?;
+        let album_key = format!("{}::{}", track.album, track.path);
+        self.albums.insert(album_key.as_bytes(), b"")?;
         Ok(())
     }
 
@@ -34,6 +38,10 @@ impl Database {
     }
 
     pub fn remove_track(&self, path: &str) -> Result<()> {
+        if let Some(track) = self.get_track(path)? {
+            let album_key = format!("{}::{}", track.album, path);
+            self.albums.remove(album_key.as_bytes())?;
+        }
         self.db.remove(path.as_bytes())?;
         Ok(())
     }
@@ -43,11 +51,11 @@ impl Database {
             .all_tracks()?
             .into_iter()
             .filter(|t| t.path.starts_with(prefix))
-            .map(|t| t.path)
+            .map(|t| t.path.clone())
             .collect();
         let count = to_remove.len();
         for path in &to_remove {
-            self.db.remove(path.as_bytes())?;
+            self.remove_track(path)?;
         }
         self.db.flush()?;
         Ok(count)
@@ -61,6 +69,43 @@ impl Database {
             tracks.push(track);
         }
         Ok(tracks)
+    }
+
+    pub fn tracks_by_album(&self, album: &str) -> Result<Vec<Track>> {
+        let prefix = format!("{}::", album);
+        let mut tracks = Vec::new();
+        for result in self.albums.scan_prefix(prefix.as_bytes()) {
+            let (key, _) = result?;
+            let path = std::str::from_utf8(&key)
+                .ok()
+                .and_then(|k| k.split_once("::"))
+                .map(|(_, p)| p)
+                .unwrap_or("");
+            if !path.is_empty() {
+                if let Some(track) = self.get_track(path)? {
+                    tracks.push(track);
+                }
+            }
+        }
+        Ok(tracks)
+    }
+
+    pub fn album_info(&self) -> Result<Vec<(String, usize)>> {
+        use std::collections::HashMap;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for result in self.albums.iter() {
+            let (key, _) = result?;
+            if let Ok(ks) = std::str::from_utf8(&key) {
+                if let Some((album, _)) = ks.split_once("::") {
+                    if !album.is_empty() {
+                        *counts.entry(album.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        let mut info: Vec<(String, usize)> = counts.into_iter().collect();
+        info.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        Ok(info)
     }
 
     pub fn search_tracks(&self, keyword: &str) -> Result<Vec<Track>> {
@@ -98,22 +143,6 @@ impl Database {
         albums.sort();
         albums.dedup();
         Ok(albums)
-    }
-
-    pub fn distinct_album_names(&self) -> Result<Vec<String>> {
-        let mut names: Vec<String> = self
-            .all_tracks()?
-            .into_iter()
-            .map(|t| t.album)
-            .filter(|a| !a.is_empty())
-            .collect();
-        names.sort();
-        names.dedup();
-        Ok(names)
-    }
-
-    pub fn track_count(&self) -> Result<u64> {
-        Ok(self.db.len() as u64)
     }
 
     pub fn flush(&self) -> Result<()> {

@@ -156,7 +156,7 @@ fn format_codec(ft: FileType) -> String {
     }
 }
 
-const SUPPORTED_EXTENSIONS: &[&str] = &["mp3", "flac", "wav", "ogg", "m4a", "aac", "opus", "dsf", "aiff"];
+const SUPPORTED_EXTENSIONS: &[&str] = &["mp3", "flac", "wav", "ogg", "m4a", "aac", "opus", "dsf", "aiff", "aif"];
 
 pub fn is_supported(path: &Path) -> bool {
     path.extension()

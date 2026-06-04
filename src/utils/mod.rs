@@ -30,7 +30,7 @@ pub fn progress_bar(elapsed: f64, total: f64, width: usize) -> String {
     let filled = (fraction * width as f64).round() as usize;
     let filled = filled.min(width);
     let bar: String = (0..width)
-        .map(|i| if i < filled { '━' } else { '─' })
+        .map(|i| if i < filled { '█' } else { '░' })
         .collect();
     bar
 }

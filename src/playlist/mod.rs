@@ -17,16 +17,6 @@ impl Playlist {
         }
     }
 
-    pub fn add(&mut self, path: &str) {
-        if !self.tracks.contains(&path.to_string()) {
-            self.tracks.push(path.to_string());
-        }
-    }
-
-    pub fn remove(&mut self, path: &str) {
-        self.tracks.retain(|t| t != path);
-    }
-
     pub fn save(&self, path: &Path) -> Result<()> {
         let data = serde_json::to_string_pretty(self)?;
         std::fs::write(path, data).context("Failed to save playlist")

@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,6 +25,12 @@ use crate::library::Library;
 use crate::metadata::Track;
 use crate::utils;
 
+struct AlbumInfo {
+    name: String,
+    track_count: usize,
+    has_current: bool,
+}
+
 enum InputMode {
     None,
     Browse,
@@ -35,17 +43,20 @@ pub struct App {
     player: Player,
     config: Config,
 
-    all_tracks: Vec<Track>,
-    album_names: Vec<String>,
+    album_info: Vec<AlbumInfo>,
+    album_cache: HashMap<String, Vec<Track>>,
     album_tracks: Vec<Track>,
     selected_album: usize,
     prev_album: usize,
     selected_track: usize,
     focus: Focus,
+    total_tracks: usize,
 
     current_path: String,
     current_meta: Option<Track>,
     track_ended: bool,
+    next_queued_path: String,
+    last_position: f64,
     exit: bool,
 
     input_mode: InputMode,
@@ -54,6 +65,7 @@ pub struct App {
     search_query: String,
     search_results: Vec<Track>,
     status_msg: String,
+    scan_rx: Option<mpsc::Receiver<String>>,
 
     browser_cwd: PathBuf,
     browser_entries: Vec<(String, bool)>,
@@ -72,8 +84,6 @@ enum Focus {
 impl App {
     pub fn new(config: Config, db: Arc<crate::db::Database>, player: Player) -> Result<Self> {
         let library = Library::new(db);
-        let all_tracks = library.list_tracks().unwrap_or_default();
-        let album_names = library.album_names().unwrap_or_default();
         let remove_paths = config.music_dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
 
         let browser_cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -83,15 +93,18 @@ impl App {
             player,
             config,
             current_meta: None,
-            all_tracks,
-            album_names,
+            album_info: Vec::new(),
+            album_cache: HashMap::new(),
             album_tracks: Vec::new(),
             selected_album: 0,
             prev_album: usize::MAX,
             selected_track: 0,
             focus: Focus::Albums,
+            total_tracks: 0,
             current_path: String::new(),
             track_ended: false,
+            next_queued_path: String::new(),
+            last_position: 0.0,
             exit: false,
             input_mode: InputMode::None,
             remove_paths,
@@ -99,6 +112,7 @@ impl App {
             search_query: String::new(),
             search_results: Vec::new(),
             status_msg: String::new(),
+            scan_rx: None,
             browser_cwd,
             browser_entries: Vec::new(),
             browser_selection: 0,
@@ -106,6 +120,7 @@ impl App {
             last_click_row: 0,
             last_click_time: Instant::now(),
         };
+        app.rebuild_album_info();
         app.load_album_tracks();
         app.load_browser();
         Ok(app)
@@ -131,20 +146,35 @@ impl App {
         self.browser_entries.append(&mut dirs);
     }
 
+    fn rebuild_album_info(&mut self) {
+        let current_album = self.current_meta.as_ref().map(|m| m.album.as_str());
+        let info = self.library.album_info().unwrap_or_default();
+        self.total_tracks = info.iter().map(|(_, c)| c).sum();
+        self.album_info = info.into_iter().map(|(name, count)| {
+            AlbumInfo {
+                has_current: Some(name.as_str()) == current_album,
+                name,
+                track_count: count,
+            }
+        }).collect();
+
+        self.album_cache.clear();
+        for info in &self.album_info {
+            if let Ok(tracks) = self.library.tracks_by_album(&info.name) {
+                self.album_cache.insert(info.name.clone(), tracks);
+            }
+        }
+    }
+
     fn load_album_tracks(&mut self) {
         if self.selected_album == self.prev_album {
             return;
         }
         self.prev_album = self.selected_album;
-        self.album_tracks = match self.album_names.get(self.selected_album) {
-            Some(album) => self
-                .all_tracks
-                .iter()
-                .filter(|t| t.album == *album)
-                .cloned()
-                .collect(),
-            None => Vec::new(),
-        };
+        self.album_tracks = self.album_info
+            .get(self.selected_album)
+            .and_then(|a| self.album_cache.get(&a.name).cloned())
+            .unwrap_or_default();
         self.selected_track = 0;
     }
 
@@ -156,9 +186,16 @@ impl App {
         let mut terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
 
         while !self.exit {
+            let pos = self.player.current_position();
+            let dur = self.player.current_duration();
+            if pos > dur + 1.0 && dur > 0.0 {
+                self.player.set_duration(pos + 1.0);
+            }
+
             terminal.draw(|f| self.render(f))?;
 
             self.check_track_end();
+            self.check_scan_complete();
             self.handle_events()?;
             self.update_metadata();
         }
@@ -175,6 +212,25 @@ impl App {
         if self.current_meta.is_none() {
             return;
         }
+        let pos = self.player.current_position();
+
+        if !self.next_queued_path.is_empty() {
+            let dur = self.current_meta.as_ref().map(|m| m.duration).unwrap_or(120.0);
+            if pos >= dur && self.last_position < dur {
+                let old_dur = self.player.current_duration();
+                self.current_path = std::mem::take(&mut self.next_queued_path);
+                self.update_metadata();
+                if let Some(ref meta) = self.current_meta {
+                    self.player.set_duration(meta.duration);
+                    self.player.adjust_seek_offset(-old_dur);
+                    if let Some(idx) = self.album_tracks.iter().position(|t| t.path == meta.path) {
+                        self.selected_track = idx;
+                    }
+                }
+                self.queue_next_track();
+            }
+        }
+
         if self.player.is_empty() && !self.current_path.is_empty() && !self.player.is_paused() {
             if !self.track_ended {
                 self.track_ended = true;
@@ -183,6 +239,47 @@ impl App {
         } else {
             self.track_ended = false;
         }
+        self.last_position = pos;
+    }
+
+    fn compute_next_index(&self) -> Option<usize> {
+        if self.album_tracks.is_empty() {
+            return None;
+        }
+        if self.config.shuffle {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let idx = loop {
+                let r = rng.gen_range(0..self.album_tracks.len());
+                if self.album_tracks.len() <= 1 || r != self.selected_track {
+                    break r;
+                }
+            };
+            Some(idx)
+        } else if self.selected_track + 1 < self.album_tracks.len() {
+            Some(self.selected_track + 1)
+        } else if self.config.repeat {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    fn queue_next_track(&mut self) {
+        let next_idx = match self.compute_next_index() {
+            Some(i) => i,
+            None => return,
+        };
+        let next_track = match self.album_tracks.get(next_idx) {
+            Some(t) => t,
+            None => return,
+        };
+        let path = std::path::Path::new(&next_track.path);
+        if !path.exists() {
+            return;
+        }
+        self.player.queue_next(path, next_track.sample_rate);
+        self.next_queued_path = next_track.path.clone();
     }
 
     fn update_metadata(&mut self) {
@@ -195,18 +292,35 @@ impl App {
             if needs && !path.is_empty() {
                 let p = std::path::Path::new(&path);
                 self.current_meta = crate::metadata::read_track(p).ok();
+                self.update_current_album_flag();
             }
         }
     }
 
+    fn update_current_album_flag(&mut self) {
+        let current_album = self.current_meta.as_ref().map(|m| m.album.as_str());
+        for info in &mut self.album_info {
+            info.has_current = Some(info.name.as_str()) == current_album;
+        }
+    }
+
     fn refresh_library(&mut self) {
-        self.all_tracks = self.library.list_tracks().unwrap_or_default();
-        self.album_names = self.library.album_names().unwrap_or_default();
-        if self.selected_album >= self.album_names.len() {
-            self.selected_album = self.album_names.len().saturating_sub(1);
+        self.rebuild_album_info();
+        if self.selected_album >= self.album_info.len() {
+            self.selected_album = self.album_info.len().saturating_sub(1);
         }
         self.prev_album = usize::MAX;
         self.load_album_tracks();
+    }
+
+    fn check_scan_complete(&mut self) {
+        if let Some(rx) = &self.scan_rx {
+            if let Ok(msg) = rx.try_recv() {
+                self.status_msg = msg;
+                self.scan_rx = None;
+                self.refresh_library();
+            }
+        }
     }
 
     fn render(&mut self, f: &mut Frame) {
@@ -302,15 +416,27 @@ impl App {
             .as_ref()
             .or_else(|| self.album_tracks.get(self.selected_track));
 
+        let track_idx = self
+            .current_meta
+            .as_ref()
+            .and_then(|m| self.album_tracks.iter().position(|t| t.path == m.path))
+            .map(|i| format!("Track {}", i + 1));
+
         let fields: Vec<(&str, String, Color)> = match meta {
-            Some(t) => vec![
-                ("Name", t.title.clone(), Color::White),
-                ("Album", t.album.clone(), Color::Yellow),
-                ("Length", utils::format_duration(t.duration), Color::DarkGray),
-                ("Bitrate", utils::format_bitrate(t.bitrate), Color::DarkGray),
-                ("Sample", utils::format_sample_rate(t.sample_rate), Color::DarkGray),
-                ("Artist", t.artist.clone(), Color::Cyan),
-            ],
+            Some(t) => {
+                let mut f = vec![
+                    ("Name", t.title.clone(), Color::White),
+                    ("Album", t.album.clone(), Color::Yellow),
+                    ("Length", utils::format_duration(t.duration), Color::DarkGray),
+                    ("Bitrate", utils::format_bitrate(t.bitrate), Color::DarkGray),
+                    ("Sample", utils::format_sample_rate(t.sample_rate), Color::DarkGray),
+                    ("Artist", t.artist.clone(), Color::Cyan),
+                ];
+                if let Some(ref tn) = track_idx {
+                    f.insert(2, ("Track", tn.clone(), Color::DarkGray));
+                }
+                f
+            }
             None => vec![],
         };
 
@@ -342,9 +468,9 @@ impl App {
         let title = if in_search {
             " Search results".into()
         } else {
-            self.album_names
+            self.album_info
                 .get(self.selected_album)
-                .map(|a| format!(" Tracks — {a}"))
+                .map(|a| format!(" Tracks — {}", a.name))
                 .unwrap_or_default()
         };
 
@@ -417,7 +543,7 @@ impl App {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        if self.album_names.is_empty() {
+        if self.album_info.is_empty() {
             let empty = Paragraph::new(" No albums found. Run `music scan <folder>`")
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(empty, inner);
@@ -432,21 +558,15 @@ impl App {
         };
 
         let items: Vec<ListItem> = self
-            .album_names
+            .album_info
             .iter()
             .enumerate()
             .skip(scroll)
             .take(visible)
-            .map(|(i, name)| {
-                let count = self.all_tracks.iter().filter(|t| t.album == *name).count();
+            .map(|(i, info)| {
                 let prefix = if i == self.selected_album { "▸ " } else { "  " };
-                let now = if self.all_tracks.iter().any(|t| t.album == *name && t.path == self.current_path)
-                {
-                    " ♪"
-                } else {
-                    ""
-                };
-                let content = format!("{prefix}{name}  ({count} tracks){now}");
+                let now = if info.has_current { " ♪" } else { "" };
+                let content = format!("{prefix}{}  ({} tracks){now}", info.name, info.track_count);
                 let style = if i == self.selected_album {
                     if matches!(self.focus, Focus::Albums) {
                         Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
@@ -549,13 +669,21 @@ impl App {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let tcount = self.all_tracks.len();
+        let tcount = self.total_tracks;
         let codec = self.current_meta.as_ref().map(|m| m.codec.as_str()).unwrap_or("--");
+        let rt_bitrate = self.player.realtime_bitrate();
+        let br_str = if rt_bitrate > 0 {
+            format!(" {rt_bitrate}kbps")
+        } else if let Some(m) = self.current_meta.as_ref().filter(|m| m.bitrate > 0) {
+            format!(" {}kbps", m.bitrate)
+        } else {
+            String::new()
+        };
         let elapsed = utils::format_duration(self.player.current_position());
         let total = utils::format_duration(self.player.current_duration());
         let pos = self.player.current_position();
         let dur = self.player.current_duration();
-        let bar_w = inner.width.saturating_sub(48) as usize;
+        let bar_w = inner.width.saturating_sub(64) as usize;
         let bar = utils::progress_bar(pos, dur, bar_w);
 
         let playing = match &self.current_meta {
@@ -573,7 +701,7 @@ impl App {
 
         let left = format!(" {tcount} items ");
         let center = format!(" {playing} ");
-        let right = format!(" {vol_str}{codec} | {elapsed} {bar} {total} ");
+        let right = format!(" {vol_str}{codec}{br_str} | {elapsed} {bar} {total} ");
 
         let l = inner.width as usize;
         let l_len = left.len();
@@ -650,7 +778,7 @@ impl App {
                                     0
                                 };
                                 let idx = scroll + (row - inner_top) as usize;
-                                if idx < self.album_names.len() {
+                                if idx < self.album_info.len() {
                                     self.selected_album = idx;
                                     self.load_album_tracks();
                                 }
@@ -708,6 +836,7 @@ impl App {
                         self.search_results.clear();
                         self.load_album_tracks();
                     }
+                    KeyCode::Char('Q') => self.exit = true,
                     KeyCode::Enter => {
                         self.play_selected_track();
                     }
@@ -745,6 +874,7 @@ impl App {
                             self.input_mode = InputMode::None;
                         }
                     }
+                    KeyCode::Char('Q') => self.exit = true,
                     KeyCode::Enter => {
                         if let Some((name, true)) = self.browser_entries.get(self.browser_selection) {
                             if name == ".." {
@@ -784,6 +914,7 @@ impl App {
                     KeyCode::Esc => {
                         self.input_mode = InputMode::None;
                     }
+                    KeyCode::Char('Q') => self.exit = true,
                     KeyCode::Up => {
                         if self.remove_path_selection > 0 {
                             self.remove_path_selection -= 1;
@@ -835,7 +966,7 @@ impl App {
                 KeyCode::Char('f') | KeyCode::Char('F') => {
                     self.input_mode = InputMode::Search;
                     self.search_query.clear();
-                    self.search_results = self.all_tracks.clone();
+                    self.search_results.clear();
                     self.selected_track = 0;
                     self.focus = Focus::Tracks;
                 }
@@ -862,7 +993,7 @@ impl App {
 
                 KeyCode::Down => match self.focus {
                     Focus::Albums => {
-                        if self.selected_album + 1 < self.album_names.len() {
+                        if self.selected_album + 1 < self.album_info.len() {
                             self.selected_album += 1;
                         }
                     }
@@ -903,7 +1034,21 @@ impl App {
                 KeyCode::Char('b') | KeyCode::Char('B') => self.previous_track(),
 
                 KeyCode::Char('p') | KeyCode::Char('P') => {
+                    self.next_queued_path.clear();
                     self.player.seek(0.0);
+                }
+
+                KeyCode::Char('j') => {
+                    let new_pos = (self.player.current_position() - 5.0).max(0.0);
+                    self.next_queued_path.clear();
+                    self.player.seek(new_pos);
+                }
+
+                KeyCode::Char('l') => {
+                    let new_pos =
+                        (self.player.current_position() + 5.0).min(self.player.current_duration());
+                    self.next_queued_path.clear();
+                    self.player.seek(new_pos);
                 }
 
                 KeyCode::Char('=') | KeyCode::Char('+') => {
@@ -934,11 +1079,10 @@ impl App {
                 }
 
                 KeyCode::Char('D') => {
-                    if let Some(album) = self.album_names.get(self.selected_album) {
-                        let paths: Vec<String> = self.all_tracks.iter()
-                            .filter(|t| t.album == *album)
-                            .map(|t| t.path.clone())
-                            .collect();
+                    if let Some(album) = self.album_info.get(self.selected_album).map(|a| &a.name) {
+                        let paths: Vec<String> = self.album_cache.get(album.as_str())
+                            .map(|tracks| tracks.iter().map(|t| t.path.clone()).collect())
+                            .unwrap_or_default();
                         if let Some(first) = paths.first() {
                             if let Some(parent) = std::path::Path::new(first).parent() {
                                 let prefix = parent.to_string_lossy().to_string();
@@ -964,47 +1108,71 @@ impl App {
     }
 
     fn scan_path(&mut self, path: &std::path::Path) -> Result<()> {
-        let (n, errs) = self.library.scan(path)?;
+        let path = path.to_path_buf();
         let path_str = path.to_string_lossy().to_string();
         if !self.config.music_dirs.iter().any(|d| d.to_string_lossy() == path_str) {
-            self.config.music_dirs.push(path.to_path_buf());
+            self.config.music_dirs.push(path.clone());
             self.config.save().ok();
         }
-        let mut msg = format!(" Added {n} tracks from {}", path.display());
-        if errs > 0 {
-            msg.push_str(&format!(" ({errs} skipped)"));
-        }
-        self.status_msg = msg;
-        self.refresh_library();
+
+        let db = self.library.db.clone();
+        let (tx, rx) = mpsc::channel();
+        self.scan_rx = Some(rx);
+        self.status_msg = format!(" Scanning {}...", path.display());
+
+        std::thread::spawn(move || {
+            let lib = Library::new(db);
+            match lib.scan(&path) {
+                Ok((n, errs)) => {
+                    let mut msg = format!(" Added {n} tracks from {}", path.display());
+                    if errs > 0 {
+                        msg.push_str(&format!(" ({errs} skipped)"));
+                    }
+                    let _ = tx.send(msg);
+                }
+                Err(e) => {
+                    let _ = tx.send(format!(" Error: {e}"));
+                }
+            }
+        });
+
         Ok(())
     }
 
     fn rescan_paths(&mut self) {
-        let mut total_removed = 0;
-        let mut total_added = 0;
-        let mut total_errors = 0;
-        for dir in &self.config.music_dirs {
-            if !dir.exists() {
-                continue;
-            }
-            let prefix = dir.to_string_lossy().to_string();
-            total_removed += self.library.remove_by_prefix(&prefix).unwrap_or(0);
-            match self.library.scan(dir) {
-                Ok((added, errors)) => {
-                    total_added += added;
-                    total_errors += errors;
+        let dirs: Vec<PathBuf> = self.config.music_dirs.iter()
+            .filter(|d| d.exists())
+            .cloned()
+            .collect();
+        let db = self.library.db.clone();
+        let (tx, rx) = mpsc::channel();
+        self.scan_rx = Some(rx);
+        self.status_msg = format!(" Rescanning {} paths...", dirs.len());
+
+        std::thread::spawn(move || {
+            let lib = Library::new(db);
+            let mut total_removed = 0;
+            let mut total_added = 0;
+            let mut total_errors = 0;
+            for dir in &dirs {
+                let prefix = dir.to_string_lossy().to_string();
+                total_removed += lib.remove_by_prefix(&prefix).unwrap_or(0);
+                match lib.scan(dir) {
+                    Ok((added, errors)) => {
+                        total_added += added;
+                        total_errors += errors;
+                    }
+                    Err(_) => {}
                 }
-                Err(_) => {}
             }
-        }
-        let mut msg = format!(
-            " Rescanned — {total_removed} tracks refreshed, {total_added} new"
-        );
-        if total_errors > 0 {
-            msg.push_str(&format!(" ({total_errors} skipped)"));
-        }
-        self.status_msg = msg;
-        self.refresh_library();
+            let mut msg = format!(
+                " Rescanned — {total_removed} tracks refreshed, {total_added} new"
+            );
+            if total_errors > 0 {
+                msg.push_str(&format!(" ({total_errors} skipped)"));
+            }
+            let _ = tx.send(msg);
+        });
     }
 
     fn play_selected_track(&mut self) {
@@ -1022,8 +1190,9 @@ impl App {
         }
         self.current_path = track.path.clone();
         self.current_meta = Some(track.clone());
-        match self.player.play(pref, Some(track.duration)) {
-            Ok(()) => {}
+        self.next_queued_path.clear();
+        match self.player.play(pref, Some(track.duration), track.sample_rate) {
+            Ok(()) => self.queue_next_track(),
             Err(e) => {
                 self.status_msg = format!(" Playback error: {e}");
             }
@@ -1035,11 +1204,16 @@ impl App {
         if self.album_tracks.is_empty() {
             return;
         }
+        self.next_queued_path.clear();
         let next = if self.config.shuffle {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            std::time::Instant::now().hash(&mut hasher);
-            (hasher.finish() as usize) % self.album_tracks.len()
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            loop {
+                let r = rng.gen_range(0..self.album_tracks.len());
+                if self.album_tracks.len() <= 1 || r != self.selected_track {
+                    break r;
+                }
+            }
         } else if self.selected_track + 1 < self.album_tracks.len() {
             self.selected_track + 1
         } else if self.config.repeat {
@@ -1056,6 +1230,7 @@ impl App {
             return;
         }
         self.player.stop();
+        self.next_queued_path.clear();
         if self.selected_track > 0 {
             self.selected_track -= 1;
         } else {
@@ -1067,17 +1242,9 @@ impl App {
     fn run_search(&mut self) {
         let q = self.search_query.to_lowercase();
         self.search_results = if q.is_empty() {
-            self.all_tracks.clone()
+            Vec::new()
         } else {
-            self.all_tracks
-                .iter()
-                .filter(|t| {
-                    t.title.to_lowercase().contains(&q)
-                        || t.artist.to_lowercase().contains(&q)
-                        || t.album.to_lowercase().contains(&q)
-                })
-                .cloned()
-                .collect()
+            self.library.search(&q).unwrap_or_default()
         };
         self.selected_track = 0;
     }
