@@ -181,6 +181,14 @@ impl Player {
         let dur = *self.current_duration.lock().unwrap();
         let target = seconds.min(dur).max(0.0);
 
+        self.stop_thread();
+
+        let mut old = self.sink.lock().unwrap();
+        if let Some(s) = old.take() {
+            s.stop();
+        }
+        drop(old);
+
         let source: Box<dyn Source<Item = i16> + Send> = {
             let is_dsf = std::path::Path::new(&path_str)
                 .extension()
@@ -247,14 +255,7 @@ impl Player {
             sink.pause();
         }
 
-        self.stop_thread();
-
-        let mut old = self.sink.lock().unwrap();
-        if let Some(s) = old.take() {
-            s.stop();
-        }
-        *old = Some(sink);
-        drop(old);
+        *self.sink.lock().unwrap() = Some(sink);
 
         *self.current_position.lock().unwrap() = target;
         *self.seek_offset.lock().unwrap() = target;
@@ -409,7 +410,7 @@ impl Player {
             return 0;
         }
         let path = self.current_path.lock().unwrap().clone();
-        let (file_bits, avg) = match path {
+        let (_, avg) = match path {
             Some(ref p) => {
                 if let Ok(meta) = std::fs::metadata(p) {
                     let bits = meta.len() * 8;
