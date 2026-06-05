@@ -94,7 +94,14 @@ impl Player {
             *self.dsf_cache.lock().unwrap() = None;
         }
 
-        // Use the default output stream (rodio handles sample rate conversion).
+        // Bit-perfect: open stream at source rate if device supports it.
+        // Only recreates the stream when the rate actually changes.
+        if !is_dsf && source_rate > 0 && *self.current_rate.lock().unwrap() != source_rate {
+            if let Ok((s, h)) = create_stream_at_rate(source_rate) {
+                *self._stream.lock().unwrap() = Some(s);
+                *self.stream_handle.lock().unwrap() = Some(h.clone());
+            }
+        }
         let handle = self.stream_handle.lock().unwrap().clone()
             .ok_or_else(|| anyhow::anyhow!("no stream handle"))?;
 
@@ -438,6 +445,27 @@ fn current_device_rate() -> u32 {
         }
     }
     48000
+}
+
+fn create_stream_at_rate(rate: u32) -> Result<(OutputStream, OutputStreamHandle)> {
+    let host = rodio::cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| anyhow::anyhow!("no output device"))?;
+
+    let config = device
+        .supported_output_configs()
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?
+        .find(|c| {
+            c.min_sample_rate().0 <= rate && c.max_sample_rate().0 >= rate
+        })
+        .map(|c| c.with_sample_rate(rodio::cpal::SampleRate(rate)))
+        .ok_or_else(|| anyhow::anyhow!("rate {rate} not supported by device"))?;
+
+    let (stream, handle) =
+        OutputStream::try_from_device_config(&device, config)
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    Ok((stream, handle))
 }
 
 fn patch_wav_header(data: &mut [u8]) {
