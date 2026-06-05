@@ -186,12 +186,6 @@ impl App {
         let mut terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
 
         while !self.exit {
-            let pos = self.player.current_position();
-            let dur = self.player.current_duration();
-            if pos > dur && dur > 0.0 {
-                self.player.set_duration(pos + 5.0);
-            }
-
             terminal.draw(|f| self.render(f))?;
 
             self.check_track_end();

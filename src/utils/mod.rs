@@ -23,10 +23,11 @@ pub fn format_sample_rate(hz: u32) -> String {
 }
 
 pub fn progress_bar(elapsed: f64, total: f64, width: usize) -> String {
-    if total <= 0.0 {
+    let effective = if total > 0.0 { total } else { elapsed };
+    if effective <= 0.0 {
         return " ".repeat(width);
     }
-    let fraction = (elapsed / total).clamp(0.0, 1.0);
+    let fraction = (elapsed / effective).clamp(0.0, 1.0);
     let filled = (fraction * width as f64).round() as usize;
     let filled = filled.min(width);
     let bar: String = (0..width)
