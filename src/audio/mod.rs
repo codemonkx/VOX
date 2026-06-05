@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
@@ -25,6 +25,8 @@ pub struct Player {
     seek_offset: Arc<Mutex<f64>>,
     current_rate: Arc<Mutex<u32>>,
     dsf_cache: Arc<Mutex<Option<Vec<u8>>>>,
+    prev_br_pos: Mutex<f64>,
+    prev_br_time: Mutex<Instant>,
 }
 
 impl Player {
@@ -45,6 +47,8 @@ impl Player {
             seek_offset: Arc::new(Mutex::new(0.0)),
             current_rate: Arc::new(Mutex::new(0)),
             dsf_cache: Arc::new(Mutex::new(None)),
+            prev_br_pos: Mutex::new(0.0),
+            prev_br_time: Mutex::new(Instant::now()),
         })
     }
 
@@ -405,17 +409,34 @@ impl Player {
             return 0;
         }
         let path = self.current_path.lock().unwrap().clone();
-        match path {
-            Some(p) => {
-                if let Ok(meta) = std::fs::metadata(&p) {
+        let (file_bits, avg) = match path {
+            Some(ref p) => {
+                if let Ok(meta) = std::fs::metadata(p) {
                     let bits = meta.len() * 8;
-                    (bits as f64 / duration / 1000.0) as u32
+                    let avg = (bits as f64 / duration / 1000.0) as u32;
+                    (bits, avg)
                 } else {
-                    0
+                    return 0;
                 }
             }
-            None => 0,
+            None => return 0,
+        };
+
+        let pos = *self.current_position.lock().unwrap();
+        let now = Instant::now();
+        let mut prev_pos = self.prev_br_pos.lock().unwrap();
+        let mut prev_time = self.prev_br_time.lock().unwrap();
+        let dt = now.duration_since(*prev_time).as_secs_f64();
+        let dp = pos - *prev_pos;
+        *prev_pos = pos;
+        *prev_time = now;
+
+        if dt < 0.5 || dp <= 0.0 {
+            return avg;
         }
+        let velocity = (dp / dt).clamp(0.5, 2.0);
+        let inst = (avg as f64 * velocity) as u32;
+        inst.max(avg.saturating_sub(100)).min(avg + 100)
     }
     pub fn set_duration(&self, dur: f64) {
         *self.current_duration.lock().unwrap() = dur;
