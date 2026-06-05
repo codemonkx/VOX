@@ -15,7 +15,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 use ratatui::Terminal;
 
@@ -324,7 +324,7 @@ impl App {
             .constraints([
                 Constraint::Length(1),
                 Constraint::Min(1),
-                Constraint::Length(3),
+                Constraint::Length(4),
                 Constraint::Length(1),
             ])
             .split(area);
@@ -703,6 +703,11 @@ impl App {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(inner);
+
         let tcount = self.total_tracks;
         let codec = self.current_meta.as_ref().map(|m| m.codec.as_str()).unwrap_or("--");
         let rt_bitrate = self.player.realtime_bitrate();
@@ -715,10 +720,6 @@ impl App {
         };
         let elapsed = utils::format_duration(self.player.current_position());
         let total = utils::format_duration(self.player.current_duration());
-        let pos = self.player.current_position();
-        let dur = self.player.current_duration();
-        let bar_w = inner.width.saturating_sub(64) as usize;
-        let bar = utils::progress_bar(pos, dur, bar_w);
 
         let playing = match &self.current_meta {
             Some(m) => format!("{} — {}", m.title, m.artist),
@@ -735,9 +736,9 @@ impl App {
 
         let left = format!(" {tcount} items ");
         let center = format!(" {playing} ");
-        let right = format!(" {vol_str}{codec}{br_str} | {elapsed} {bar} {total} ");
+        let right = format!(" {vol_str}{codec}{br_str} | {elapsed} / {total} ");
 
-        let l = inner.width as usize;
+        let l = rows[0].width as usize;
         let l_len = left.len();
         let c_len = center.len();
         let r_len = right.len();
@@ -745,17 +746,28 @@ impl App {
         let c_start = (l.saturating_sub(c_len)) / 2;
         let r_start = l.saturating_sub(r_len);
 
-        let mut spans = vec![Span::styled(&left, Style::default().fg(Color::DarkGray))];
+        let mut spans = vec![Span::styled(left, Style::default().fg(Color::DarkGray))];
         if c_start > l_len {
             spans.push(Span::raw(" ".repeat(c_start - l_len)));
         }
-        spans.push(Span::styled(&center, Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(center, Style::default().fg(Color::Cyan)));
         if r_start > c_start + c_len {
             spans.push(Span::raw(" ".repeat(r_start - c_start - c_len)));
         }
-        spans.push(Span::styled(&right, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(right, Style::default().fg(Color::DarkGray)));
 
-        f.render_widget(Paragraph::new(Line::from(spans)), inner);
+        f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
+
+        let pos = self.player.current_position();
+        let dur = self.player.current_duration();
+        let effective = if dur > 0.0 { dur } else { pos };
+        let ratio = if effective > 0.0 { (pos / effective).clamp(0.0, 1.0) as f64 } else { 0.0 };
+        f.render_widget(
+            Gauge::default()
+                .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+                .ratio(ratio),
+            rows[1],
+        );
     }
 
     fn render_help_bar(&self, f: &mut Frame, area: Rect) {
@@ -793,7 +805,7 @@ impl App {
                     self.last_click_row = m.row;
 
                     let (term_w, term_h) = size().unwrap_or((80, 24));
-                    let main_h = term_h.saturating_sub(5);
+                    let main_h = term_h.saturating_sub(6);
                     let left_w = term_w * 45 / 100;
 
                     let col = m.column;
