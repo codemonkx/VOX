@@ -81,11 +81,10 @@ impl Database {
                 .and_then(|k| k.split_once("::"))
                 .map(|(_, p)| p)
                 .unwrap_or("");
-            if !path.is_empty() {
-                if let Some(track) = self.get_track(path)? {
+            if !path.is_empty()
+                && let Some(track) = self.get_track(path)? {
                     tracks.push(track);
                 }
-            }
         }
         Ok(tracks)
     }
@@ -95,16 +94,14 @@ impl Database {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for result in self.albums.iter() {
             let (key, _) = result?;
-            if let Ok(ks) = std::str::from_utf8(&key) {
-                if let Some((album, _)) = ks.split_once("::") {
-                    if !album.is_empty() {
+            if let Ok(ks) = std::str::from_utf8(&key)
+                && let Some((album, _)) = ks.split_once("::")
+                    && !album.is_empty() {
                         *counts.entry(album.to_string()).or_insert(0) += 1;
                     }
-                }
-            }
         }
         let mut info: Vec<(String, usize)> = counts.into_iter().collect();
-        info.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        info.sort_by_key(|a| a.0.to_lowercase());
         Ok(info)
     }
 

@@ -142,7 +142,7 @@ impl App {
                 .collect(),
             Err(_) => Vec::new(),
         };
-        dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        dirs.sort_by_key(|a| a.0.to_lowercase());
         self.browser_entries.append(&mut dirs);
     }
 
@@ -213,8 +213,8 @@ impl App {
             return;
         }
 
-        if !self.next_queued_path.is_empty() {
-            if pos >= dur && self.last_position < dur {
+        if !self.next_queued_path.is_empty()
+            && pos >= dur && self.last_position < dur {
                 self.current_path = std::mem::take(&mut self.next_queued_path);
                 self.update_metadata();
                 if let Some(idx) = self.album_tracks.iter().position(|t| t.path == self.current_path) {
@@ -230,7 +230,6 @@ impl App {
                 }
                 self.queue_next_track();
             }
-        }
 
         if self.player.is_empty() && !self.current_path.is_empty() && !self.player.is_paused() {
             if !self.track_ended {
@@ -315,13 +314,12 @@ impl App {
     }
 
     fn check_scan_complete(&mut self) {
-        if let Some(rx) = &self.scan_rx {
-            if let Ok(msg) = rx.try_recv() {
+        if let Some(rx) = &self.scan_rx
+            && let Ok(msg) = rx.try_recv() {
                 self.status_msg = msg;
                 self.scan_rx = None;
                 self.refresh_library();
             }
-        }
     }
 
     fn render(&mut self, f: &mut Frame) {
@@ -768,7 +766,7 @@ impl App {
         let pos = self.player.current_position();
         let dur = self.player.current_duration();
         let effective = if dur > 0.0 { dur } else { pos };
-        let ratio = if effective > 0.0 { (pos / effective).clamp(0.0, 1.0) as f64 } else { 0.0 };
+        let ratio = if effective > 0.0 { (pos / effective).clamp(0.0, 1.0) } else { 0.0 };
         f.render_widget(
             Gauge::default()
                 .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
@@ -901,16 +899,14 @@ impl App {
                         self.search_query.push(c);
                         self.run_search();
                     }
-                    KeyCode::Up => {
-                        if self.selected_track > 0 {
+                    KeyCode::Up
+                        if self.selected_track > 0 => {
                             self.selected_track -= 1;
                         }
-                    }
-                    KeyCode::Down => {
-                        if self.selected_track + 1 < self.search_results.len() {
+                    KeyCode::Down
+                        if self.selected_track + 1 < self.search_results.len() => {
                             self.selected_track += 1;
                         }
-                    }
                     _ => {}
                 }
                 return Ok(());
@@ -946,16 +942,14 @@ impl App {
                             self.status_msg = format!(" Error: {e}");
                         }
                     }
-                    KeyCode::Up => {
-                        if self.browser_selection > 0 {
+                    KeyCode::Up
+                        if self.browser_selection > 0 => {
                             self.browser_selection -= 1;
                         }
-                    }
-                    KeyCode::Down => {
-                        if self.browser_selection + 1 < self.browser_entries.len() {
+                    KeyCode::Down
+                        if self.browser_selection + 1 < self.browser_entries.len() => {
                             self.browser_selection += 1;
                         }
-                    }
                     _ => {}
                 }
                 return Ok(());
@@ -968,16 +962,14 @@ impl App {
                         self.input_mode = InputMode::None;
                     }
                     KeyCode::Char('Q') => self.exit = true,
-                    KeyCode::Up => {
-                        if self.remove_path_selection > 0 {
+                    KeyCode::Up
+                        if self.remove_path_selection > 0 => {
                             self.remove_path_selection -= 1;
                         }
-                    }
-                    KeyCode::Down => {
-                        if self.remove_path_selection + 1 < self.remove_paths.len() {
+                    KeyCode::Down
+                        if self.remove_path_selection + 1 < self.remove_paths.len() => {
                             self.remove_path_selection += 1;
                         }
-                    }
                     KeyCode::Enter => {
                         let sel = self.remove_path_selection;
                         self.input_mode = InputMode::None;
@@ -1136,14 +1128,13 @@ impl App {
                         let paths: Vec<String> = self.album_cache.get(album.as_str())
                             .map(|tracks| tracks.iter().map(|t| t.path.clone()).collect())
                             .unwrap_or_default();
-                        if let Some(first) = paths.first() {
-                            if let Some(parent) = std::path::Path::new(first).parent() {
+                        if let Some(first) = paths.first()
+                            && let Some(parent) = std::path::Path::new(first).parent() {
                                 let prefix = parent.to_string_lossy().to_string();
                                 let n = self.library.remove_by_prefix(&prefix).unwrap_or(0);
                                 self.status_msg = format!(" Removed {n} tracks");
                                 self.refresh_library();
                             }
-                        }
                     }
                 }
 
@@ -1210,12 +1201,9 @@ impl App {
             for dir in &dirs {
                 let prefix = dir.to_string_lossy().to_string();
                 total_removed += lib.remove_by_prefix(&prefix).unwrap_or(0);
-                match lib.scan(dir) {
-                    Ok((added, errors)) => {
-                        total_added += added;
-                        total_errors += errors;
-                    }
-                    Err(_) => {}
+                if let Ok((added, errors)) = lib.scan(dir) {
+                    total_added += added;
+                    total_errors += errors;
                 }
             }
             let mut msg = format!(

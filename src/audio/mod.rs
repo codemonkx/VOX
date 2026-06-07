@@ -121,12 +121,11 @@ impl Player {
 
         // Bit-perfect: open stream at source rate if device supports it.
         // Only recreates the stream when the rate actually changes.
-        if !is_dsf && source_rate > 0 && *self.current_rate.lock().unwrap() != source_rate {
-            if let Ok((s, h)) = create_stream_at_rate(source_rate) {
+        if !is_dsf && source_rate > 0 && *self.current_rate.lock().unwrap() != source_rate
+            && let Ok((s, h)) = create_stream_at_rate(source_rate) {
                 *self._stream.lock().unwrap() = Some(s);
                 *self.stream_handle.lock().unwrap() = Some(h.clone());
             }
-        }
         let handle = self.stream_handle.lock().unwrap().clone()
             .ok_or_else(|| anyhow::anyhow!("no stream handle"))?;
 
@@ -380,11 +379,10 @@ impl Player {
         let vol = vol.clamp(0.0, 1.0);
         let lock = self.sink.lock().unwrap();
         *self.volume.lock().unwrap() = vol;
-        if !self.muted.load(Ordering::SeqCst) {
-            if let Some(ref s) = *lock {
+        if !self.muted.load(Ordering::SeqCst)
+            && let Some(ref s) = *lock {
                 s.set_volume(vol);
             }
-        }
     }
 
     pub fn get_volume(&self) -> f32 {
@@ -505,11 +503,10 @@ impl Drop for Player {
 
 fn current_device_rate() -> u32 {
     let host = rodio::cpal::default_host();
-    if let Some(device) = host.default_output_device() {
-        if let Ok(config) = device.default_output_config() {
+    if let Some(device) = host.default_output_device()
+        && let Ok(config) = device.default_output_config() {
             return config.sample_rate().0;
         }
-    }
     48000
 }
 

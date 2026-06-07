@@ -19,7 +19,7 @@ use crate::db::Database;
 
 fn open_db(db_path: &std::path::Path) -> Result<Database> {
     match Database::open(db_path) {
-        Ok(db) => return Ok(db),
+        Ok(db) => Ok(db),
         Err(e) => {
             let msg = format!("{e}");
             if msg.contains("could not acquire lock") {
