@@ -284,8 +284,10 @@ impl App {
         };
         if needs && !path.is_empty() {
             let p = std::path::Path::new(&path);
-            self.current_meta = crate::metadata::read_track(p).ok();
-            self.update_current_album_flag();
+            if let Ok(meta) = crate::metadata::read_track(p) {
+                self.current_meta = Some(meta);
+                self.update_current_album_flag();
+            }
         }
     }
 
@@ -1232,15 +1234,17 @@ impl App {
         if !pref.exists() {
             return;
         }
-        self.current_path = track.path.clone();
-        self.current_meta = Some(track.clone());
         self.next_queued_path.clear();
-        if let Some(idx) = self.album_tracks.iter().position(|t| t.path == track.path) {
-            self.selected_track = idx;
-        }
-        self.update_current_album_flag();
         match self.player.play(&pref, Some(track.duration), track.sample_rate) {
-            Ok(()) => self.queue_next_track(),
+            Ok(()) => {
+                self.current_path = track.path.clone();
+                self.current_meta = Some(track.clone());
+                if let Some(idx) = self.album_tracks.iter().position(|t| t.path == track.path) {
+                    self.selected_track = idx;
+                }
+                self.update_current_album_flag();
+                self.queue_next_track();
+            }
             Err(e) => {
                 self.status_msg = format!(" Playback error: {e}");
             }
