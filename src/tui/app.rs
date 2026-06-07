@@ -207,19 +207,25 @@ impl App {
             return;
         }
         let pos = self.player.current_position();
+        let dur = self.player.current_duration();
+        if dur <= 0.0 {
+            return;
+        }
 
         if !self.next_queued_path.is_empty() {
-            let dur = self.current_meta.as_ref().map(|m| m.duration).unwrap_or(120.0);
             if pos >= dur && self.last_position < dur {
-                let old_dur = self.player.current_duration();
                 self.current_path = std::mem::take(&mut self.next_queued_path);
                 self.update_metadata();
                 if let Some(idx) = self.album_tracks.iter().position(|t| t.path == self.current_path) {
                     self.selected_track = idx;
                 }
-                if let Some(ref meta) = self.current_meta {
+                let next_dur = self.player.take_next_duration();
+                if next_dur > 0.0 {
+                    self.player.set_duration(next_dur);
+                    self.player.adjust_seek_offset(-dur);
+                } else if let Some(ref meta) = self.current_meta {
                     self.player.set_duration(meta.duration);
-                    self.player.adjust_seek_offset(-old_dur);
+                    self.player.adjust_seek_offset(-dur);
                 }
                 self.queue_next_track();
             }

@@ -52,6 +52,7 @@ pub struct Player {
     current_rate: Arc<Mutex<u32>>,
     samples_consumed: Arc<AtomicU64>,
     channels: Arc<Mutex<u16>>,
+    next_duration: Arc<Mutex<f64>>,
     prev_br_pos: Mutex<f64>,
     prev_br_time: Mutex<Instant>,
 }
@@ -74,6 +75,7 @@ impl Player {
             current_rate: Arc::new(Mutex::new(0)),
             samples_consumed: Arc::new(AtomicU64::new(0)),
             channels: Arc::new(Mutex::new(2)),
+            next_duration: Arc::new(Mutex::new(0.0)),
             prev_br_pos: Mutex::new(0.0),
             prev_br_time: Mutex::new(Instant::now()),
         })
@@ -173,6 +175,7 @@ impl Player {
         sink.append(source);
 
         *self.current_duration.lock().unwrap() = duration;
+        *self.next_duration.lock().unwrap() = 0.0;
         *self.sink.lock().unwrap() = Some(sink);
         self.samples_consumed.store(0, Ordering::Relaxed);
         *self.seek_offset.lock().unwrap() = 0.0;
@@ -289,6 +292,7 @@ impl Player {
         let samples = self.samples_consumed.clone();
         let channels = self.channels.clone();
         let sink_arc = self.sink.clone();
+        let next_dur = self.next_duration.clone();
 
         thread::spawn(move || {
             let is_dsf = path_buf.extension()
@@ -310,6 +314,7 @@ impl Player {
                 match Decoder::new(Cursor::new(wav_data)) {
                     Ok(d) => {
                         *channels.lock().unwrap() = d.channels();
+                        *next_dur.lock().unwrap() = d.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0);
                         Box::new(PositionTracker::new(Box::new(d), samples))
                     }
                     Err(_) => return,
@@ -322,6 +327,7 @@ impl Player {
                 match Decoder::new(BufReader::new(file)) {
                     Ok(d) => {
                         *channels.lock().unwrap() = d.channels();
+                        *next_dur.lock().unwrap() = d.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0);
                         Box::new(PositionTracker::new(Box::new(d), samples))
                     }
                     Err(_) => return,
@@ -423,6 +429,13 @@ impl Player {
 
     pub fn current_duration(&self) -> f64 {
         *self.current_duration.lock().unwrap()
+    }
+
+    pub fn take_next_duration(&self) -> f64 {
+        let mut d = self.next_duration.lock().unwrap();
+        let val = *d;
+        *d = 0.0;
+        val
     }
 
     pub fn is_paused(&self) -> bool {
