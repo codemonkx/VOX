@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -10,12 +10,38 @@ use anyhow::{Context, Result};
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
+struct PositionTracker {
+    inner: Box<dyn Source<Item = i16> + Send>,
+    samples: Arc<AtomicU64>,
+}
+
+impl PositionTracker {
+    fn new(inner: Box<dyn Source<Item = i16> + Send>, samples: Arc<AtomicU64>) -> Self {
+        Self { inner, samples }
+    }
+}
+
+impl Iterator for PositionTracker {
+    type Item = i16;
+    fn next(&mut self) -> Option<i16> {
+        let s = self.inner.next()?;
+        self.samples.fetch_add(1, Ordering::Relaxed);
+        Some(s)
+    }
+}
+
+impl Source for PositionTracker {
+    fn current_frame_len(&self) -> Option<usize> { self.inner.current_frame_len() }
+    fn channels(&self) -> u16 { self.inner.channels() }
+    fn sample_rate(&self) -> u32 { self.inner.sample_rate() }
+    fn total_duration(&self) -> Option<Duration> { self.inner.total_duration() }
+}
+
 pub struct Player {
     sink: Arc<Mutex<Option<Sink>>>,
     volume: Arc<Mutex<f32>>,
     muted: Arc<AtomicBool>,
     saved_volume: Arc<Mutex<f32>>,
-    current_position: Arc<Mutex<f64>>,
     current_duration: Arc<Mutex<f64>>,
     is_playing: Arc<AtomicBool>,
     _stream: Mutex<Option<OutputStream>>,
@@ -24,7 +50,8 @@ pub struct Player {
     current_path: Arc<Mutex<Option<String>>>,
     seek_offset: Arc<Mutex<f64>>,
     current_rate: Arc<Mutex<u32>>,
-    dsf_cache: Arc<Mutex<Option<Vec<u8>>>>,
+    samples_consumed: Arc<AtomicU64>,
+    channels: Arc<Mutex<u16>>,
     prev_br_pos: Mutex<f64>,
     prev_br_time: Mutex<Instant>,
 }
@@ -37,7 +64,6 @@ impl Player {
             volume: Arc::new(Mutex::new(0.8)),
             muted: Arc::new(AtomicBool::new(false)),
             saved_volume: Arc::new(Mutex::new(0.8)),
-            current_position: Arc::new(Mutex::new(0.0)),
             current_duration: Arc::new(Mutex::new(0.0)),
             is_playing: Arc::new(AtomicBool::new(false)),
             _stream: Mutex::new(Some(_stream)),
@@ -46,24 +72,21 @@ impl Player {
             current_path: Arc::new(Mutex::new(None)),
             seek_offset: Arc::new(Mutex::new(0.0)),
             current_rate: Arc::new(Mutex::new(0)),
-            dsf_cache: Arc::new(Mutex::new(None)),
+            samples_consumed: Arc::new(AtomicU64::new(0)),
+            channels: Arc::new(Mutex::new(2)),
             prev_br_pos: Mutex::new(0.0),
             prev_br_time: Mutex::new(Instant::now()),
         })
     }
 
     fn start_position_thread(&self) {
-        let pos = self.current_position.clone();
         let is_playing = self.is_playing.clone();
         let sink_arc = self.sink.clone();
-        let seek_off = self.seek_offset.clone();
         let handle = thread::spawn(move || {
             loop {
                 thread::sleep(Duration::from_millis(250));
                 let lock = sink_arc.lock().unwrap();
                 if let Some(ref s) = *lock {
-                    let off = *seek_off.lock().unwrap();
-                    *pos.lock().unwrap() = s.get_pos().as_secs_f64() + off;
                     if s.empty() {
                         is_playing.store(false, Ordering::SeqCst);
                         break;
@@ -94,10 +117,6 @@ impl Player {
             .map(|e| e.eq_ignore_ascii_case("dsf"))
             .unwrap_or(false);
 
-        if !is_dsf {
-            *self.dsf_cache.lock().unwrap() = None;
-        }
-
         // Bit-perfect: open stream at source rate if device supports it.
         // Only recreates the stream when the rate actually changes.
         if !is_dsf && source_rate > 0 && *self.current_rate.lock().unwrap() != source_rate {
@@ -123,11 +142,14 @@ impl Player {
             let mut wav_data = output.stdout;
             patch_wav_header(&mut wav_data);
 
-            *self.dsf_cache.lock().unwrap() = Some(wav_data.clone());
-            Box::new(Decoder::new(Cursor::new(wav_data))?)
+            let source = Decoder::new(Cursor::new(wav_data))?;
+            *self.channels.lock().unwrap() = source.channels();
+            Box::new(PositionTracker::new(Box::new(source), self.samples_consumed.clone()))
         } else {
             let file = File::open(path)?;
-            Box::new(Decoder::new(BufReader::new(file))?)
+            let source = Decoder::new(BufReader::new(file))?;
+            *self.channels.lock().unwrap() = source.channels();
+            Box::new(PositionTracker::new(Box::new(source), self.samples_consumed.clone()))
         };
 
         let duration = source.total_duration()
@@ -152,7 +174,7 @@ impl Player {
 
         *self.current_duration.lock().unwrap() = duration;
         *self.sink.lock().unwrap() = Some(sink);
-        *self.current_position.lock().unwrap() = 0.0;
+        self.samples_consumed.store(0, Ordering::Relaxed);
         *self.seek_offset.lock().unwrap() = 0.0;
         self.is_playing.store(true, Ordering::SeqCst);
 
@@ -162,18 +184,7 @@ impl Player {
     }
 
     pub fn seek(&self, seconds: f64) {
-        {
-            let lock = self.sink.lock().unwrap();
-            if let Some(ref s) = *lock {
-                if s.try_seek(Duration::from_secs_f64(seconds)).is_ok() {
-                    *self.current_position.lock().unwrap() = seconds;
-                    return;
-                }
-            }
-        }
-
-        let path_str = self.current_path.lock().unwrap().clone();
-        let path_str = match path_str {
+        let path_str = match self.current_path.lock().unwrap().clone() {
             Some(p) => p,
             None => return,
         };
@@ -189,79 +200,80 @@ impl Player {
         }
         drop(old);
 
-        let source: Box<dyn Source<Item = i16> + Send> = {
-            let is_dsf = std::path::Path::new(&path_str)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("dsf"))
-                .unwrap_or(false);
+        let is_dsf = Path::new(&path_str).extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("dsf"))
+            .unwrap_or(false);
 
-            if is_dsf {
-                let wav_data = match self.dsf_cache.lock().unwrap().clone() {
-                    Some(wav) => wav,
-                    None => {
-                        let rate = current_device_rate();
-                        let output = match std::process::Command::new("ffmpeg")
-                            .args(["-i", &path_str, "-ar", &rate.to_string(), "-f", "wav", "-"])
-                            .output()
-                        {
-                            Ok(o) => o,
-                            Err(_) => return,
-                        };
-                        if !output.status.success() {
-                            return;
-                        }
-                        output.stdout
+        let handle_arc = self.stream_handle.lock().unwrap().clone();
+        let sink_arc = self.sink.clone();
+        let seek_offset_arc = self.seek_offset.clone();
+        let is_playing_arc = self.is_playing.clone();
+        let volume_arc = self.volume.clone();
+        let muted_arc = self.muted.clone();
+        let channels_arc = self.channels.clone();
+        let samples_consumed_arc = self.samples_consumed.clone();
+
+        thread::spawn(move || {
+            let source: Box<dyn Source<Item = i16> + Send> = {
+                let mut cmd = std::process::Command::new("ffmpeg");
+                cmd.args(["-ss", &target.to_string(), "-i", &path_str]);
+                if is_dsf {
+                    cmd.args(["-ar", &current_device_rate().to_string()]);
+                }
+                cmd.args(["-f", "wav", "-"]);
+
+                let output = match cmd.output() {
+                    Ok(o) if o.status.success() => o.stdout,
+                    _ => return,
+                };
+
+                let mut wav_data = output;
+                patch_wav_header(&mut wav_data);
+
+                let source = match Decoder::new(Cursor::new(wav_data)) {
+                    Ok(d) => d,
+                    Err(_) => return,
+                };
+                *channels_arc.lock().unwrap() = source.channels();
+                samples_consumed_arc.store(0, Ordering::Relaxed);
+                Box::new(PositionTracker::new(Box::new(source), samples_consumed_arc))
+            };
+
+            let handle = match handle_arc {
+                Some(h) => h,
+                None => return,
+            };
+
+            let sink = match Sink::try_new(&handle) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            let vol = *volume_arc.lock().unwrap();
+            sink.set_volume(if muted_arc.load(Ordering::SeqCst) { 0.0 } else { vol });
+            sink.append(source);
+
+            *sink_arc.lock().unwrap() = Some(sink);
+            *seek_offset_arc.lock().unwrap() = target;
+            is_playing_arc.store(true, Ordering::SeqCst);
+
+            let pos_is_playing = is_playing_arc.clone();
+            let pos_sink = sink_arc.clone();
+            thread::spawn(move || loop {
+                thread::sleep(Duration::from_millis(250));
+                let lock = pos_sink.lock().unwrap();
+                if let Some(ref s) = *lock {
+                    if s.empty() {
+                        pos_is_playing.store(false, Ordering::SeqCst);
+                        break;
                     }
-                };
-                let mut patched = wav_data;
-                patch_wav_header(&mut patched);
-                match Decoder::new(Cursor::new(patched)) {
-                    Ok(d) => Box::new(d),
-                    Err(_) => return,
+                } else {
+                    pos_is_playing.store(false, Ordering::SeqCst);
+                    break;
                 }
-            } else {
-                let file = match File::open(Path::new(&path_str)) {
-                    Ok(f) => f,
-                    Err(_) => return,
-                };
-                match Decoder::new(BufReader::new(file)) {
-                    Ok(d) => Box::new(d),
-                    Err(_) => return,
-                }
-            }
-        };
-
-        let was_paused = self.is_paused();
-        let new_source = source.skip_duration(Duration::from_secs_f64(target));
-
-        let handle = match self.stream_handle.lock().unwrap().clone() {
-            Some(h) => h,
-            None => return,
-        };
-
-        let sink = match Sink::try_new(&handle) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let vol = *self.volume.lock().unwrap();
-        sink.set_volume(if self.muted.load(Ordering::SeqCst) {
-            0.0
-        } else {
-            vol
+            });
         });
-        sink.append(new_source);
-        if was_paused {
-            sink.pause();
-        }
-
-        *self.sink.lock().unwrap() = Some(sink);
-
-        *self.current_position.lock().unwrap() = target;
-        *self.seek_offset.lock().unwrap() = target;
-        self.is_playing.store(true, Ordering::SeqCst);
-
-        self.start_position_thread();
     }
 
     pub fn queue_next(&self, path: &Path, source_rate: u32) {
@@ -273,40 +285,54 @@ impl Player {
             return;
         }
 
-        let is_dsf = path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("dsf"))
-            .unwrap_or(false);
+        let path_buf = path.to_owned();
+        let samples = self.samples_consumed.clone();
+        let channels = self.channels.clone();
+        let sink_arc = self.sink.clone();
 
-        let source: Box<dyn Source<Item = i16> + Send> = if is_dsf {
-            let rate = current_device_rate();
-            let output = match std::process::Command::new("ffmpeg")
-                .args(["-i", &path.to_string_lossy(), "-ar", &rate.to_string(), "-f", "wav", "-"])
-                .output()
-            {
-                Ok(o) if o.status.success() => o.stdout,
-                _ => return,
-            };
-            let mut wav_data = output;
-            patch_wav_header(&mut wav_data);
-            match Decoder::new(Cursor::new(wav_data)) {
-                Ok(d) => Box::new(d),
-                Err(_) => return,
-            }
-        } else {
-            let file = match File::open(path) {
-                Ok(f) => f,
-                Err(_) => return,
-            };
-            match Decoder::new(BufReader::new(file)) {
-                Ok(d) => Box::new(d),
-                Err(_) => return,
-            }
-        };
+        thread::spawn(move || {
+            let is_dsf = path_buf.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("dsf"))
+                .unwrap_or(false);
 
-        if let Some(ref sink) = *self.sink.lock().unwrap() {
-            sink.append(source);
-        }
+            let source: Box<dyn Source<Item = i16> + Send> = if is_dsf {
+                let rate = current_device_rate();
+                let output = match std::process::Command::new("ffmpeg")
+                    .args(["-i", &path_buf.to_string_lossy(), "-ar", &rate.to_string(), "-f", "wav", "-"])
+                    .output()
+                {
+                    Ok(o) if o.status.success() => o.stdout,
+                    _ => return,
+                };
+                let mut wav_data = output;
+                patch_wav_header(&mut wav_data);
+                match Decoder::new(Cursor::new(wav_data)) {
+                    Ok(d) => {
+                        *channels.lock().unwrap() = d.channels();
+                        Box::new(PositionTracker::new(Box::new(d), samples))
+                    }
+                    Err(_) => return,
+                }
+            } else {
+                let file = match File::open(&path_buf) {
+                    Ok(f) => f,
+                    Err(_) => return,
+                };
+                match Decoder::new(BufReader::new(file)) {
+                    Ok(d) => {
+                        *channels.lock().unwrap() = d.channels();
+                        Box::new(PositionTracker::new(Box::new(d), samples))
+                    }
+                    Err(_) => return,
+                }
+            };
+
+            let lock = sink_arc.lock().unwrap();
+            if let Some(ref sink) = *lock {
+                sink.append(source);
+            }
+        });
     }
 
     pub fn pause(&self) {
@@ -336,12 +362,12 @@ impl Player {
         self.stop_thread();
 
         self.is_playing.store(false, Ordering::SeqCst);
-        *self.current_position.lock().unwrap() = 0.0;
         *self.current_duration.lock().unwrap() = 0.0;
         *self.current_path.lock().unwrap() = None;
         *self.seek_offset.lock().unwrap() = 0.0;
         *self.current_rate.lock().unwrap() = 0;
-        *self.dsf_cache.lock().unwrap() = None;
+        self.samples_consumed.store(0, Ordering::Relaxed);
+        *self.channels.lock().unwrap() = 2;
     }
 
     pub fn set_volume(&self, vol: f32) {
@@ -383,15 +409,20 @@ impl Player {
     }
 
     pub fn current_position(&self) -> f64 {
-        *self.current_position.lock().unwrap()
+        let samples = self.samples_consumed.load(Ordering::Relaxed);
+        let ch = *self.channels.lock().unwrap();
+        let rate = *self.current_rate.lock().unwrap();
+        let pos = if ch > 0 && rate > 0 {
+            samples as f64 / (ch as f64 * rate as f64)
+        } else {
+            0.0
+        };
+        let off = *self.seek_offset.lock().unwrap();
+        pos + off
     }
 
     pub fn current_duration(&self) -> f64 {
         *self.current_duration.lock().unwrap()
-    }
-
-    pub fn is_playing(&self) -> bool {
-        self.is_playing.load(Ordering::SeqCst)
     }
 
     pub fn is_paused(&self) -> bool {
@@ -423,7 +454,7 @@ impl Player {
             None => return 0,
         };
 
-        let pos = *self.current_position.lock().unwrap();
+        let pos = self.current_position();
         let now = Instant::now();
         let mut prev_pos = self.prev_br_pos.lock().unwrap();
         let mut prev_time = self.prev_br_time.lock().unwrap();

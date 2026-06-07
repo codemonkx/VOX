@@ -214,12 +214,12 @@ impl App {
                 let old_dur = self.player.current_duration();
                 self.current_path = std::mem::take(&mut self.next_queued_path);
                 self.update_metadata();
+                if let Some(idx) = self.album_tracks.iter().position(|t| t.path == self.current_path) {
+                    self.selected_track = idx;
+                }
                 if let Some(ref meta) = self.current_meta {
                     self.player.set_duration(meta.duration);
                     self.player.adjust_seek_offset(-old_dur);
-                    if let Some(idx) = self.album_tracks.iter().position(|t| t.path == meta.path) {
-                        self.selected_track = idx;
-                    }
                 }
                 self.queue_next_track();
             }
@@ -277,17 +277,15 @@ impl App {
     }
 
     fn update_metadata(&mut self) {
-        if self.player.is_playing() || self.player.is_paused() {
-            let path = self.current_path.clone();
-            let needs = match &self.current_meta {
-                None => true,
-                Some(m) => m.path != path,
-            };
-            if needs && !path.is_empty() {
-                let p = std::path::Path::new(&path);
-                self.current_meta = crate::metadata::read_track(p).ok();
-                self.update_current_album_flag();
-            }
+        let path = self.current_path.clone();
+        let needs = match &self.current_meta {
+            None => true,
+            Some(m) => m.path != path,
+        };
+        if needs && !path.is_empty() {
+            let p = std::path::Path::new(&path);
+            self.current_meta = crate::metadata::read_track(p).ok();
+            self.update_current_album_flag();
         }
     }
 
@@ -1229,15 +1227,19 @@ impl App {
         if idx >= tracks.len() {
             return;
         }
-        let track = &tracks[idx];
-        let pref = std::path::Path::new(&track.path);
+        let track = tracks[idx].clone();
+        let pref = std::path::PathBuf::from(&track.path);
         if !pref.exists() {
             return;
         }
         self.current_path = track.path.clone();
         self.current_meta = Some(track.clone());
         self.next_queued_path.clear();
-        match self.player.play(pref, Some(track.duration), track.sample_rate) {
+        if let Some(idx) = self.album_tracks.iter().position(|t| t.path == track.path) {
+            self.selected_track = idx;
+        }
+        self.update_current_album_flag();
+        match self.player.play(&pref, Some(track.duration), track.sample_rate) {
             Ok(()) => self.queue_next_track(),
             Err(e) => {
                 self.status_msg = format!(" Playback error: {e}");
