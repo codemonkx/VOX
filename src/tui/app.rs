@@ -192,6 +192,7 @@ impl App {
             self.check_scan_complete();
             self.handle_events()?;
             self.update_metadata();
+            std::thread::sleep(Duration::from_millis(50));
         }
 
         disable_raw_mode()?;
@@ -794,7 +795,7 @@ impl App {
     }
 
     fn handle_events(&mut self) -> Result<()> {
-        if !event::poll(Duration::from_millis(100))? {
+        if !event::poll(Duration::ZERO)? {
             return Ok(());
         }
 
