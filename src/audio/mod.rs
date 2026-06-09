@@ -178,8 +178,11 @@ impl Player {
 
         sink.append(source);
 
+        self.seek_count.fetch_add(1, Ordering::Relaxed);
+        self.current_seek_id.store(0, Ordering::Relaxed);
         *self.current_duration.lock().unwrap() = duration;
         *self.next_duration.lock().unwrap() = 0.0;
+        *self.next_channels.lock().unwrap() = 0;
         *self.sink.lock().unwrap() = Some(sink);
         self.samples_consumed.store(0, Ordering::Relaxed);
         *self.seek_offset.lock().unwrap() = 0.0;
