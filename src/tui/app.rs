@@ -191,9 +191,8 @@ impl App {
 
             self.check_track_end();
             self.check_scan_complete();
-            self.handle_events()?;
             self.update_metadata();
-            std::thread::sleep(Duration::from_millis(50));
+            self.handle_events()?;
         }
 
         disable_raw_mode()?;
@@ -231,6 +230,8 @@ impl App {
                     self.player.set_duration(meta.duration);
                     self.player.adjust_seek_offset(-dur);
                 }
+                let next_ch = self.player.take_next_channels();
+                if next_ch > 0 { self.player.set_channels(next_ch); }
                 self.queue_next_track();
             }
 
@@ -288,16 +289,22 @@ impl App {
 
     fn update_metadata(&mut self) {
         let path = self.current_path.clone();
+        if path.is_empty() { return; }
         let needs = match &self.current_meta {
             None => true,
             Some(m) => m.path != path,
         };
-        if needs && !path.is_empty() {
-            let p = std::path::Path::new(&path);
-            if let Ok(meta) = crate::metadata::read_track(p) {
-                self.current_meta = Some(meta);
-                self.update_current_album_flag();
-            }
+        if !needs { return; }
+        // Prefer DB cache over file read
+        if let Some(t) = self.album_tracks.iter().find(|t| t.path == path).cloned() {
+            self.current_meta = Some(t);
+            self.update_current_album_flag();
+            return;
+        }
+        let p = std::path::Path::new(&path);
+        if let Ok(meta) = crate::metadata::read_track(p) {
+            self.current_meta = Some(meta);
+            self.update_current_album_flag();
         }
     }
 
@@ -797,7 +804,8 @@ impl App {
     }
 
     fn handle_events(&mut self) -> Result<()> {
-        if !event::poll(Duration::ZERO)? {
+        // Blocking poll with 50ms timeout — replaces explicit sleep(50)
+        if !event::poll(Duration::from_millis(50))? {
             return Ok(());
         }
 
