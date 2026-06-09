@@ -231,7 +231,7 @@ impl App {
                     self.player.adjust_seek_offset(-dur);
                 }
                 let next_ch = self.player.take_next_channels();
-                if next_ch > 0 { self.player.set_channels(next_ch); }
+                if next_ch > 0 { self.player.adjust_channels(next_ch); }
                 self.queue_next_track();
             }
 

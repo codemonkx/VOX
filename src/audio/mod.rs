@@ -539,8 +539,19 @@ impl Player {
         *self.seek_offset.lock().unwrap() += delta;
     }
 
-    pub fn set_channels(&self, ch: u16) {
-        *self.channels.lock().unwrap() = ch;
+    /// Changes channel count and adjusts seek_offset so position stays continuous.
+    pub fn adjust_channels(&self, new_ch: u16) {
+        if new_ch == 0 { return; }
+        let mut ch_lock = self.channels.lock().unwrap();
+        let old_ch = *ch_lock;
+        if old_ch == new_ch || old_ch == 0 { *ch_lock = new_ch; return; }
+        let samples = self.samples_consumed.load(Ordering::Relaxed) as f64;
+        let rate = *self.current_rate.lock().unwrap() as f64;
+        if rate <= 0.0 { *ch_lock = new_ch; return; }
+        let old_pos = samples / (old_ch as f64 * rate);
+        let mut off = self.seek_offset.lock().unwrap();
+        *off = old_pos - samples / (new_ch as f64 * rate);
+        *ch_lock = new_ch;
     }
 }
 
