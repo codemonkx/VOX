@@ -56,6 +56,9 @@ fn main() -> Result<()> {
 
     // Otherwise, launch the TUI (ncmpcpp-style interface)
     let player = audio::Player::new()?;
+    if let Some(sys_vol) = audio::Player::read_system_volume() {
+        player.set_volume(sys_vol);
+    }
     let mut app = tui::App::new(config, db, player)?;
     app.run()
 }

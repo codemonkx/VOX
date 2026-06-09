@@ -186,6 +186,7 @@ impl App {
         let mut terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
 
         while !self.exit {
+            self.player.sync_volume_from_system();
             terminal.draw(|f| self.render(f))?;
 
             self.check_track_end();
@@ -214,12 +215,14 @@ impl App {
         }
 
         if !self.next_queued_path.is_empty()
-            && pos >= dur && self.last_position < dur {
+            && pos + 0.3 >= dur && self.last_position + 0.3 < dur {
+                self.status_msg = format!("GAPLESS {pos:.1}/{dur:.1}");
                 self.current_path = std::mem::take(&mut self.next_queued_path);
-                self.update_metadata();
                 if let Some(idx) = self.album_tracks.iter().position(|t| t.path == self.current_path) {
                     self.selected_track = idx;
+                    self.current_meta = Some(self.album_tracks[idx].clone());
                 }
+                self.update_current_album_flag();
                 let next_dur = self.player.take_next_duration();
                 if next_dur > 0.0 {
                     self.player.set_duration(next_dur);
@@ -234,6 +237,7 @@ impl App {
         if self.player.is_empty() && !self.current_path.is_empty() && !self.player.is_paused() {
             if !self.track_ended {
                 self.track_ended = true;
+                self.status_msg = "TRACK_ENDED is_empty".into();
                 self.next_track();
             }
         } else {

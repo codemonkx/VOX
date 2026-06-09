@@ -55,6 +55,7 @@ pub struct Player {
     next_duration: Arc<Mutex<f64>>,
     prev_br_pos: Mutex<f64>,
     prev_br_time: Mutex<Instant>,
+    last_vol_sync: Mutex<Instant>,
 }
 
 impl Player {
@@ -78,6 +79,7 @@ impl Player {
             next_duration: Arc::new(Mutex::new(0.0)),
             prev_br_pos: Mutex::new(0.0),
             prev_br_time: Mutex::new(Instant::now()),
+            last_vol_sync: Mutex::new(Instant::now()),
         })
     }
 
@@ -164,12 +166,8 @@ impl Player {
 
         let sink = Sink::try_new(&handle)?;
 
-        let vol = *self.volume.lock().unwrap();
-        sink.set_volume(if self.muted.load(Ordering::SeqCst) {
-            0.0
-        } else {
-            vol
-        });
+        // Volume handled by system mixer (wpctl), keep rodio at full
+        sink.set_volume(1.0);
 
         sink.append(source);
 
@@ -211,8 +209,6 @@ impl Player {
         let sink_arc = self.sink.clone();
         let seek_offset_arc = self.seek_offset.clone();
         let is_playing_arc = self.is_playing.clone();
-        let volume_arc = self.volume.clone();
-        let muted_arc = self.muted.clone();
         let channels_arc = self.channels.clone();
         let samples_consumed_arc = self.samples_consumed.clone();
 
@@ -252,8 +248,7 @@ impl Player {
                 Err(_) => return,
             };
 
-            let vol = *volume_arc.lock().unwrap();
-            sink.set_volume(if muted_arc.load(Ordering::SeqCst) { 0.0 } else { vol });
+            sink.set_volume(1.0);
             sink.append(source);
 
             *sink_arc.lock().unwrap() = Some(sink);
@@ -377,35 +372,63 @@ impl Player {
 
     pub fn set_volume(&self, vol: f32) {
         let vol = vol.clamp(0.0, 1.0);
-        let lock = self.sink.lock().unwrap();
         *self.volume.lock().unwrap() = vol;
-        if !self.muted.load(Ordering::SeqCst)
-            && let Some(ref s) = *lock {
-                s.set_volume(vol);
+        // Sync to system mixer (this is the actual output volume)
+        Self::set_system_volume(vol);
+    }
+
+    pub fn read_system_volume() -> Option<f32> {
+        let out = std::process::Command::new("wpctl")
+            .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
+            .output().ok()?;
+        if !out.status.success() { return None; }
+        let s = std::str::from_utf8(&out.stdout).ok()?;
+        let vol = s.trim_start_matches("Volume:")
+            .trim().split_whitespace().next()?;
+        vol.parse::<f32>().ok()
+    }
+
+    pub fn set_system_volume(vol: f32) {
+        let vol = vol.clamp(0.0, 1.0);
+        let out = std::process::Command::new("wpctl")
+            .args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{vol:.2}")])
+            .output();
+        if let Ok(o) = &out {
+            if !o.status.success() {
+                eprintln!("wpctl set-volume failed");
             }
+        }
     }
 
     pub fn get_volume(&self) -> f32 {
         *self.volume.lock().unwrap()
     }
 
+    /// Polls system volume via wpctl and updates internal tracking.
+    /// Throttled to at most once every 200ms to avoid spawning too many processes.
+    pub fn sync_volume_from_system(&self) {
+        let mut last = self.last_vol_sync.lock().unwrap();
+        if last.elapsed() < std::time::Duration::from_millis(200) {
+            return;
+        }
+        *last = Instant::now();
+        drop(last);
+        if let Some(sys_vol) = Self::read_system_volume() {
+            *self.volume.lock().unwrap() = sys_vol;
+        }
+    }
+
     pub fn mute(&self) {
         self.muted.store(true, Ordering::SeqCst);
-        let lock = self.sink.lock().unwrap();
         *self.saved_volume.lock().unwrap() = *self.volume.lock().unwrap();
-        if let Some(ref s) = *lock {
-            s.set_volume(0.0);
-        }
+        Self::set_system_volume(0.0);
     }
 
     pub fn unmute(&self) {
         self.muted.store(false, Ordering::SeqCst);
-        let lock = self.sink.lock().unwrap();
         let vol = *self.saved_volume.lock().unwrap();
         *self.volume.lock().unwrap() = vol;
-        if let Some(ref s) = *lock {
-            s.set_volume(vol);
-        }
+        Self::set_system_volume(vol);
     }
 
     pub fn is_muted(&self) -> bool {
