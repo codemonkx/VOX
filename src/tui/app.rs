@@ -819,7 +819,7 @@ impl App {
         let inner_w = 13 + 2 * (key_w + desc_w);
         let w = (inner_w + 2) as u16;
         let w = w.min(area.width.saturating_sub(6));
-        let h = 18u16.min(area.height.saturating_sub(4));
+        let h = 28u16.min(area.height.saturating_sub(4));
         let x = (area.width - w) / 2;
         let y = (area.height - h) / 2;
         let rect = Rect::new(x, y, w, h);
@@ -834,61 +834,79 @@ impl App {
         f.render_widget(block, rect);
 
         let items: &[(&str, &str)] = &[
-            ("↑ ↓", "Move in panel"),
-            ("← → / Tab", "Switch panel"),
-            ("Enter", "Select / play"),
-            ("Space / k", "Play / pause"),
-            ("n / b", "Next / prev"),
+            ("↑ / ↓", "Move in panel"),
+            ("← / → / Tab", "Switch panel"),
+            ("Enter", "Select / Play"),
+            ("Space / k", "Play / Pause"),
+            ("n / b", "Next / Prev"),
             ("j / l", "Seek -5s / +5s"),
             ("p", "Restart track"),
-            ("+ / -", "Up / down 5%"),
+            ("+ / -", "Up / Down 5%"),
             ("m", "Mute"),
             ("f", "Search"),
             ("/", "Browse folder"),
             ("D", "Remove album"),
             ("x", "Remove path"),
             ("Ctrl+R", "Rescan"),
-            ("r / s", "Repeat / shuffle"),
+            ("r / s", "Repeat / Shuffle"),
             ("Ctrl+K", "Help"),
-            ("Esc", "Close / cancel"),
+            ("Esc", "Close / Cancel"),
             ("q / Ctrl+C", "Quit"),
         ];
 
         let mid = (items.len() + 1) / 2;
-        let mut rows: Vec<Line> = Vec::with_capacity(mid + 3);
+        let mut rows: Vec<Line> = Vec::new();
 
         let grid = Style::default().fg(Color::DarkGray);
+        let header_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        let sep_fmt = || format!("├{}┼{}┼{}┼{}┤",
+            "─".repeat(key_w + 2),
+            "─".repeat(desc_w + 2),
+            "─".repeat(key_w + 2),
+            "─".repeat(desc_w + 2));
         let top = format!("┌{}┬{}┬{}┬{}┐",
             "─".repeat(key_w + 2),
             "─".repeat(desc_w + 2),
             "─".repeat(key_w + 2),
             "─".repeat(desc_w + 2));
-        rows.push(Line::from(Span::styled(top, grid)));
-
-        for i in 0..mid {
-            let (lk, ld) = items[i];
-            let (rk, rd) = if i + mid < items.len() { items[i + mid] } else { ("", "") };
-
-            rows.push(Line::from(vec![
-                Span::styled("│ ", grid),
-                Span::styled(Self::pad(lk, key_w), Style::default().fg(Color::Yellow)),
-                Span::styled(" │ ", grid),
-                Span::styled(Self::pad(ld, desc_w), Style::default().fg(Color::White)),
-                Span::styled(" │ ", grid),
-                Span::styled(Self::pad(rk, key_w), Style::default().fg(Color::Yellow)),
-                Span::styled(" │ ", grid),
-                Span::styled(Self::pad(rd, desc_w), Style::default().fg(Color::White)),
-                Span::styled(" │", grid),
-            ]));
-        }
-
         let bot = format!("└{}┴{}┴{}┴{}┘",
             "─".repeat(key_w + 2),
             "─".repeat(desc_w + 2),
             "─".repeat(key_w + 2),
             "─".repeat(desc_w + 2));
-        rows.push(Line::from(Span::styled(bot, grid)));
 
+        let row = |a1: &str, a2: &str, b1: &str, b2: &str, s1: Style, s2: Style, s3: Style, s4: Style| -> Line {
+            Line::from(vec![
+                Span::styled("│ ", grid),
+                Span::styled(Self::pad(a1, key_w), s1),
+                Span::styled(" │ ", grid),
+                Span::styled(Self::pad(a2, desc_w), s2),
+                Span::styled(" │ ", grid),
+                Span::styled(Self::pad(b1, key_w), s3),
+                Span::styled(" │ ", grid),
+                Span::styled(Self::pad(b2, desc_w), s4),
+                Span::styled(" │", grid),
+            ])
+        };
+
+        rows.push(Line::from(Span::styled(top, grid)));
+        rows.push(row("Key", "Action", "Key", "Action", header_style, header_style, header_style, header_style));
+        rows.push(Line::from(Span::styled(sep_fmt(), grid)));
+
+        for i in 0..mid {
+            let (lk, ld) = items[i];
+            let (rk, rd) = if i + mid < items.len() { items[i + mid] } else { ("", "") };
+            rows.push(row(lk, ld, rk, rd,
+                Style::default().fg(Color::Yellow),
+                Style::default().fg(Color::White),
+                Style::default().fg(Color::Yellow),
+                Style::default().fg(Color::White)));
+            if i + 1 < mid {
+                rows.push(Line::from(Span::styled(sep_fmt(), grid)));
+            }
+        }
+
+        rows.push(Line::from(Span::styled(bot, grid)));
         rows.push(Line::from(Span::raw("")));
         rows.push(Line::from(
             Span::styled("  Esc / Ctrl+K  to close", Style::default().fg(Color::DarkGray)),
