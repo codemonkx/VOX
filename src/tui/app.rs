@@ -814,12 +814,12 @@ impl App {
 
     fn render_help_overlay(&self, f: &mut Frame) {
         let area = f.area();
-        let key_w = 10usize;
-        let desc_w = 16usize;
-        let inner_w = 5 + key_w * 2 + desc_w * 2;
+        let key_w = 11usize;
+        let desc_w = 17usize;
+        let inner_w = 13 + 2 * (key_w + desc_w);
         let w = (inner_w + 2) as u16;
         let w = w.min(area.width.saturating_sub(6));
-        let h = 16u16.min(area.height.saturating_sub(4));
+        let h = 18u16.min(area.height.saturating_sub(4));
         let x = (area.width - w) / 2;
         let y = (area.height - h) / 2;
         let rect = Rect::new(x, y, w, h);
