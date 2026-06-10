@@ -19,6 +19,8 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 use ratatui::Terminal;
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::audio::Player;
 use crate::config::Config;
 use crate::library::Library;
@@ -812,8 +814,12 @@ impl App {
 
     fn render_help_overlay(&self, f: &mut Frame) {
         let area = f.area();
-        let w = 62u16.min(area.width.saturating_sub(6));
-        let h = 14u16.min(area.height.saturating_sub(4));
+        let key_w = 10usize;
+        let desc_w = 16usize;
+        let inner_w = 5 + key_w * 2 + desc_w * 2;
+        let w = (inner_w + 2) as u16;
+        let w = w.min(area.width.saturating_sub(6));
+        let h = 16u16.min(area.height.saturating_sub(4));
         let x = (area.width - w) / 2;
         let y = (area.height - h) / 2;
         let rect = Rect::new(x, y, w, h);
@@ -849,47 +855,58 @@ impl App {
         ];
 
         let mid = (items.len() + 1) / 2;
-        let col_w = 10usize;
-        let desc_w = 16usize;
-        let mut rows: Vec<Line> = Vec::with_capacity(mid + 1);
+        let mut rows: Vec<Line> = Vec::with_capacity(mid + 3);
+
+        let grid = Style::default().fg(Color::DarkGray);
+        let top = format!("┌{}┬{}┬{}┬{}┐",
+            "─".repeat(key_w + 2),
+            "─".repeat(desc_w + 2),
+            "─".repeat(key_w + 2),
+            "─".repeat(desc_w + 2));
+        rows.push(Line::from(Span::styled(top, grid)));
 
         for i in 0..mid {
             let (lk, ld) = items[i];
             let (rk, rd) = if i + mid < items.len() { items[i + mid] } else { ("", "") };
 
             rows.push(Line::from(vec![
-                Span::styled(
-                    format!("  {:<col_w$}", lk, col_w = col_w),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(
-                    format!("{:<desc_w$}", ld, desc_w = desc_w),
-                    Style::default().fg(Color::White),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{:<col_w$}", rk, col_w = col_w),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(
-                    format!("{:<desc_w$}", rd, desc_w = desc_w),
-                    Style::default().fg(Color::White),
-                ),
+                Span::styled("│ ", grid),
+                Span::styled(Self::pad(lk, key_w), Style::default().fg(Color::Yellow)),
+                Span::styled(" │ ", grid),
+                Span::styled(Self::pad(ld, desc_w), Style::default().fg(Color::White)),
+                Span::styled(" │ ", grid),
+                Span::styled(Self::pad(rk, key_w), Style::default().fg(Color::Yellow)),
+                Span::styled(" │ ", grid),
+                Span::styled(Self::pad(rd, desc_w), Style::default().fg(Color::White)),
+                Span::styled(" │", grid),
             ]));
         }
 
-        let inner_h = inner.height as usize;
-        if inner_h > 0 && rows.len() < inner_h {
-            let pad = inner_h - rows.len();
-            for _ in 0..pad.saturating_sub(1) {
-                rows.push(Line::from(Span::raw("")));
-            }
-            rows.push(Line::from(
-                Span::styled("  Esc / Ctrl+K  to close", Style::default().fg(Color::DarkGray)),
-            ));
-        }
+        let bot = format!("└{}┴{}┴{}┴{}┘",
+            "─".repeat(key_w + 2),
+            "─".repeat(desc_w + 2),
+            "─".repeat(key_w + 2),
+            "─".repeat(desc_w + 2));
+        rows.push(Line::from(Span::styled(bot, grid)));
+
+        rows.push(Line::from(Span::raw("")));
+        rows.push(Line::from(
+            Span::styled("  Esc / Ctrl+K  to close", Style::default().fg(Color::DarkGray)),
+        ));
 
         f.render_widget(Paragraph::new(rows), inner);
+    }
+
+    fn pad(s: &str, width: usize) -> String {
+        let current = UnicodeWidthStr::width(s);
+        if current >= width {
+            s.to_string()
+        } else {
+            let mut r = String::with_capacity(s.len() + width - current);
+            r.push_str(s);
+            r.push_str(&" ".repeat(width - current));
+            r
+        }
     }
 
     fn handle_events(&mut self) -> Result<()> {
