@@ -15,7 +15,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 use ratatui::Terminal;
 
@@ -74,6 +74,8 @@ pub struct App {
     last_click_col: u16,
     last_click_row: u16,
     last_click_time: Instant,
+
+    show_help: bool,
 }
 
 enum Focus {
@@ -119,6 +121,7 @@ impl App {
             last_click_col: 0,
             last_click_row: 0,
             last_click_time: Instant::now(),
+            show_help: false,
         };
         app.rebuild_album_info();
         app.load_album_tracks();
@@ -356,6 +359,10 @@ impl App {
         self.render_right_panel(f, main_chunks[1]);
         self.render_bottom_bar(f, chunks[2]);
         self.render_help_bar(f, chunks[3]);
+
+        if self.show_help {
+            self.render_help_overlay(f);
+        }
     }
 
     fn render_top_bar(&self, f: &mut Frame, area: Rect) {
@@ -803,6 +810,55 @@ impl App {
         f.render_widget(bar, area);
     }
 
+    fn render_help_overlay(&self, f: &mut Frame) {
+        let area = f.area();
+        let w = 46u16.min(area.width.saturating_sub(4));
+        let h = 24u16.min(area.height.saturating_sub(4));
+        let x = (area.width - w) / 2;
+        let y = (area.height - h) / 2;
+        let rect = Rect::new(x, y, w, h);
+
+        f.render_widget(Clear, rect);
+        let block = Block::default()
+            .title(" Keybindings ")
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .style(Style::default().fg(Color::Cyan));
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+
+        let lines = [
+            ("↑ ↓", "Navigate focused panel"),
+            ("← → / Tab", "Switch panel focus"),
+            ("Enter", "Select album / play track"),
+            ("Space / k", "Play / pause"),
+            ("n / b", "Next / previous track"),
+            ("j / l", "Seek -5s / +5s"),
+            ("p", "Restart current track"),
+            ("+ / -", "Volume up / down 5%"),
+            ("m", "Mute / unmute"),
+            ("f", "Search tracks"),
+            ("/", "Browse & scan folders"),
+            ("D", "Remove album from library"),
+            ("x", "Remove tracked path"),
+            ("r / s", "Toggle repeat / shuffle"),
+            ("Ctrl+R", "Rescan all paths"),
+            ("Ctrl+K", "Toggle this help"),
+            ("q / Ctrl+C", "Quit"),
+            ("Esc", "Cancel / close help"),
+        ];
+
+        let mut rows: Vec<Line> = Vec::new();
+        for (key, action) in &lines {
+            rows.push(Line::from(vec![
+                Span::styled(format!(" {:>10}", key), Style::default().fg(Color::Yellow)),
+                Span::raw("  "),
+                Span::styled(*action, Style::default().fg(Color::White)),
+            ]));
+        }
+        f.render_widget(Paragraph::new(rows), inner);
+    }
+
     fn handle_events(&mut self) -> Result<()> {
         // Blocking poll with 50ms timeout — replaces explicit sleep(50)
         if !event::poll(Duration::from_millis(50))? {
@@ -885,6 +941,16 @@ impl App {
 
             if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
                 self.rescan_paths();
+                return Ok(());
+            }
+
+            if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL {
+                self.show_help = !self.show_help;
+                return Ok(());
+            }
+
+            if key.code == KeyCode::Esc && self.show_help {
+                self.show_help = false;
                 return Ok(());
             }
 
