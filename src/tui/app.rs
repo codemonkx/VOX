@@ -858,7 +858,7 @@ impl App {
             if a.starts_with("─") {
                 rows.push(Line::from(
                     Span::styled(
-                        format!(" {} ", &a[2..]),
+                        format!(" {} ", a.strip_prefix("─").unwrap_or(a)),
                         Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
                     )
                 ));
