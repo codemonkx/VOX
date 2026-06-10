@@ -812,49 +812,73 @@ impl App {
 
     fn render_help_overlay(&self, f: &mut Frame) {
         let area = f.area();
-        let w = 46u16.min(area.width.saturating_sub(4));
-        let h = 24u16.min(area.height.saturating_sub(4));
+        let w = 52u16.min(area.width.saturating_sub(6));
+        let h = 28u16.min(area.height.saturating_sub(4));
         let x = (area.width - w) / 2;
         let y = (area.height - h) / 2;
         let rect = Rect::new(x, y, w, h);
 
         f.render_widget(Clear, rect);
         let block = Block::default()
-            .title(" Keybindings ")
+            .title(" Help ")
             .borders(Borders::ALL)
-            .border_set(border::ROUNDED)
+            .border_set(border::THICK)
             .style(Style::default().fg(Color::Cyan));
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        let lines = [
-            ("↑ ↓", "Navigate focused panel"),
-            ("← → / Tab", "Switch panel focus"),
-            ("Enter", "Select album / play track"),
-            ("Space / k", "Play / pause"),
-            ("n / b", "Next / previous track"),
-            ("j / l", "Seek -5s / +5s"),
-            ("p", "Restart current track"),
-            ("+ / -", "Volume up / down 5%"),
-            ("m", "Mute / unmute"),
-            ("f", "Search tracks"),
-            ("/", "Browse & scan folders"),
-            ("D", "Remove album from library"),
-            ("x", "Remove tracked path"),
-            ("r / s", "Toggle repeat / shuffle"),
-            ("Ctrl+R", "Rescan all paths"),
-            ("Ctrl+K", "Toggle this help"),
-            ("q / Ctrl+C", "Quit"),
-            ("Esc", "Cancel / close help"),
+        let sections: &[(&str, &[(&str, &str)])] = &[
+            ("Navigation", &[
+                ("↑ ↓", "Move in focused panel"),
+                ("← → / Tab", "Switch panel focus"),
+                ("Enter", "Select album / play track"),
+            ]),
+            ("Playback", &[
+                ("Space / k", "Play / pause"),
+                ("n / b", "Next / previous track"),
+                ("j / l", "Seek -5s / +5s"),
+                ("p", "Restart current track"),
+            ]),
+            ("Volume", &[
+                ("+ / -", "Up / down 5%"),
+                ("m", "Mute / unmute"),
+            ]),
+            ("Library", &[
+                ("f", "Search tracks"),
+                ("/", "Browse & scan folders"),
+                ("D", "Remove album"),
+                ("x", "Remove tracked path"),
+                ("Ctrl+R", "Rescan all paths"),
+            ]),
+            ("Settings", &[
+                ("r", "Toggle repeat"),
+                ("s", "Toggle shuffle"),
+            ]),
+            ("Other", &[
+                ("Ctrl+K", "Toggle this help"),
+                ("Esc", "Close / cancel"),
+                ("q / Ctrl+C", "Quit"),
+            ]),
         ];
 
         let mut rows: Vec<Line> = Vec::new();
-        for (key, action) in &lines {
-            rows.push(Line::from(vec![
-                Span::styled(format!(" {:>10}", key), Style::default().fg(Color::Yellow)),
-                Span::raw("  "),
-                Span::styled(*action, Style::default().fg(Color::White)),
-            ]));
+        for (section, binds) in sections {
+            if !rows.is_empty() {
+                rows.push(Line::from(Span::raw("")));
+            }
+            rows.push(Line::from(
+                Span::styled(
+                    format!(" {}", section),
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                )
+            ));
+            for (key, action) in *binds {
+                rows.push(Line::from(vec![
+                    Span::styled(format!("  {:>12}", key), Style::default().fg(Color::Yellow)),
+                    Span::raw("  "),
+                    Span::styled(*action, Style::default().fg(Color::White)),
+                ]));
+            }
         }
         f.render_widget(Paragraph::new(rows), inner);
     }
