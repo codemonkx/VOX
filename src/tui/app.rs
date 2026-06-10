@@ -819,7 +819,7 @@ impl App {
         let inner_w = 13 + 2 * (key_w + desc_w);
         let w = (inner_w + 2) as u16;
         let w = w.min(area.width.saturating_sub(6));
-        let h = 28u16.min(area.height.saturating_sub(4));
+        let h = 25u16.min(area.height.saturating_sub(4));
         let x = (area.width - w) / 2;
         let y = (area.height - h) / 2;
         let rect = Rect::new(x, y, w, h);
