@@ -812,74 +812,75 @@ impl App {
 
     fn render_help_overlay(&self, f: &mut Frame) {
         let area = f.area();
-        let w = 52u16.min(area.width.saturating_sub(6));
-        let h = 28u16.min(area.height.saturating_sub(4));
+        let w = 50u16.min(area.width.saturating_sub(6));
+        let h = 26u16.min(area.height.saturating_sub(4));
         let x = (area.width - w) / 2;
         let y = (area.height - h) / 2;
         let rect = Rect::new(x, y, w, h);
 
         f.render_widget(Clear, rect);
         let block = Block::default()
-            .title(" Help ")
+            .title(" ⌨️  Keybindings ")
             .borders(Borders::ALL)
-            .border_set(border::THICK)
+            .border_set(border::PLAIN)
             .style(Style::default().fg(Color::Cyan));
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        let sections: &[(&str, &[(&str, &str)])] = &[
-            ("Navigation", &[
-                ("↑ ↓", "Move in focused panel"),
-                ("← → / Tab", "Switch panel focus"),
-                ("Enter", "Select album / play track"),
-            ]),
-            ("Playback", &[
-                ("Space / k", "Play / pause"),
-                ("n / b", "Next / previous track"),
-                ("j / l", "Seek -5s / +5s"),
-                ("p", "Restart current track"),
-            ]),
-            ("Volume", &[
-                ("+ / -", "Up / down 5%"),
-                ("m", "Mute / unmute"),
-            ]),
-            ("Library", &[
-                ("f", "Search tracks"),
-                ("/", "Browse & scan folders"),
-                ("D", "Remove album"),
-                ("x", "Remove tracked path"),
-                ("Ctrl+R", "Rescan all paths"),
-            ]),
-            ("Settings", &[
-                ("r", "Toggle repeat"),
-                ("s", "Toggle shuffle"),
-            ]),
-            ("Other", &[
-                ("Ctrl+K", "Toggle this help"),
-                ("Esc", "Close / cancel"),
-                ("q / Ctrl+C", "Quit"),
-            ]),
+        let items: &[(&str, &str, &str)] = &[
+            ("─ Navigation", "", ""),
+            ("↑ ↓", "Move in panel", ""),
+            ("← → / Tab", "Switch panel", ""),
+            ("Enter", "Select / play", ""),
+            ("─ Playback", "", ""),
+            ("Space / k", "Play / pause", ""),
+            ("n / b", "Next / prev", ""),
+            ("j / l", "Seek -5s / +5s", ""),
+            ("p", "Restart track", ""),
+            ("─ Volume", "", ""),
+            ("+ / -", "Up / down 5%", ""),
+            ("m", "Mute", ""),
+            ("─ Library", "", ""),
+            ("f", "Search", ""),
+            ("/", "Browse folder", ""),
+            ("D", "Remove album", ""),
+            ("x", "Remove path", ""),
+            ("Ctrl+R", "Rescan", ""),
+            ("─ Misc", "", ""),
+            ("r / s", "Repeat / shuffle", ""),
+            ("Ctrl+K", "Help", ""),
+            ("Esc", "Close / cancel", ""),
+            ("q / Ctrl+C", "Quit", ""),
         ];
 
-        let mut rows: Vec<Line> = Vec::new();
-        for (section, binds) in sections {
-            if !rows.is_empty() {
-                rows.push(Line::from(Span::raw("")));
-            }
-            rows.push(Line::from(
-                Span::styled(
-                    format!(" {}", section),
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
-                )
-            ));
-            for (key, action) in *binds {
+        let mut rows = Vec::with_capacity(items.len());
+        for (a, b, _c) in items {
+            if a.starts_with("─") {
+                let sep = format!("  {} ", &a[2..]);
+                rows.push(Line::from(
+                    Span::styled(sep, Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
+                ));
+            } else {
                 rows.push(Line::from(vec![
-                    Span::styled(format!("  {:>12}", key), Style::default().fg(Color::Yellow)),
+                    Span::styled(format!("  {:>12}", a), Style::default().fg(Color::Yellow)),
                     Span::raw("  "),
-                    Span::styled(*action, Style::default().fg(Color::White)),
+                    Span::styled(*b, Style::default().fg(Color::White)),
                 ]));
             }
         }
+
+        let inner_h = inner.height as usize;
+        if rows.len() < inner_h {
+            let pad = inner_h - rows.len();
+            for _ in 0..pad.saturating_sub(1) {
+                rows.push(Line::from(Span::raw("")));
+            }
+            rows.push(Line::from(Span::styled(
+                format!("  {:>width$}", "Esc / Ctrl+K  to close", width = w as usize - 6),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+
         f.render_widget(Paragraph::new(rows), inner);
     }
 
