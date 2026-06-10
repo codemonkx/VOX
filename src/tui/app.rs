@@ -813,7 +813,7 @@ impl App {
     fn render_help_overlay(&self, f: &mut Frame) {
         let area = f.area();
         let w = 50u16.min(area.width.saturating_sub(6));
-        let h = 26u16.min(area.height.saturating_sub(4));
+        let h = 28u16.min(area.height.saturating_sub(4));
         let x = (area.width - w) / 2;
         let y = (area.height - h) / 2;
         let rect = Rect::new(x, y, w, h);
@@ -827,46 +827,51 @@ impl App {
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        let items: &[(&str, &str)] = &[
-            ("─ Navigation", ""),
-            ("↑ ↓", "Move in panel"),
-            ("← → / Tab", "Switch panel"),
-            ("Enter", "Select / play"),
-            ("─ Playback", ""),
-            ("Space / k", "Play / pause"),
-            ("n / b", "Next / prev"),
-            ("j / l", "Seek -5s / +5s"),
-            ("p", "Restart track"),
-            ("─ Volume", ""),
-            ("+ / -", "Up / down 5%"),
-            ("m", "Mute"),
-            ("─ Library", ""),
-            ("f", "Search"),
-            ("/", "Browse folder"),
-            ("D", "Remove album"),
-            ("x", "Remove path"),
-            ("Ctrl+R", "Rescan"),
-            ("─ Misc", ""),
-            ("r / s", "Repeat / shuffle"),
-            ("Ctrl+K", "Help"),
-            ("Esc", "Close / cancel"),
-            ("q / Ctrl+C", "Quit"),
+        let sections: &[(&str, &[(&str, &str)])] = &[
+            ("Navigation", &[
+                ("↑ ↓", "Move in panel"),
+                ("← → / Tab", "Switch panel"),
+                ("Enter", "Select / play"),
+            ]),
+            ("Playback", &[
+                ("Space / k", "Play / pause"),
+                ("n / b", "Next / prev"),
+                ("j / l", "Seek -5s / +5s"),
+                ("p", "Restart track"),
+            ]),
+            ("Volume", &[
+                ("+ / -", "Up / down 5%"),
+                ("m", "Mute"),
+            ]),
+            ("Library", &[
+                ("f", "Search"),
+                ("/", "Browse folder"),
+                ("D", "Remove album"),
+                ("x", "Remove path"),
+                ("Ctrl+R", "Rescan"),
+            ]),
+            ("Misc", &[
+                ("r / s", "Repeat / shuffle"),
+                ("Ctrl+K", "Help"),
+                ("Esc", "Close / cancel"),
+                ("q / Ctrl+C", "Quit"),
+            ]),
         ];
 
-        let mut rows: Vec<Line> = Vec::with_capacity(items.len());
-        for (a, b) in items {
-            if a.starts_with("─") {
-                rows.push(Line::from(
-                    Span::styled(
-                        format!(" {} ", a.strip_prefix("─").unwrap_or(a)),
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
-                    )
-                ));
-            } else {
+        let key_w = 14usize;
+        let mut rows: Vec<Line> = Vec::new();
+        for &(name, keybinds) in sections {
+            rows.push(Line::from(Span::styled(
+                format!(" {}", name),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+            for &(key, desc) in keybinds {
                 rows.push(Line::from(vec![
-                    Span::styled(format!("  {:>12}", a), Style::default().fg(Color::Yellow)),
-                    Span::raw("   "),
-                    Span::styled(*b, Style::default().fg(Color::White)),
+                    Span::styled(
+                        format!("  {:<width$}", key, width = key_w),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::styled(desc, Style::default().fg(Color::White)),
                 ]));
             }
         }
