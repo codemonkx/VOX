@@ -820,65 +820,66 @@ impl App {
 
         f.render_widget(Clear, rect);
         let block = Block::default()
-            .title(" ⌨️  Keybindings ")
+            .title(" Keybindings ")
             .borders(Borders::ALL)
             .border_set(border::PLAIN)
             .style(Style::default().fg(Color::Cyan));
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        let items: &[(&str, &str, &str)] = &[
-            ("─ Navigation", "", ""),
-            ("↑ ↓", "Move in panel", ""),
-            ("← → / Tab", "Switch panel", ""),
-            ("Enter", "Select / play", ""),
-            ("─ Playback", "", ""),
-            ("Space / k", "Play / pause", ""),
-            ("n / b", "Next / prev", ""),
-            ("j / l", "Seek -5s / +5s", ""),
-            ("p", "Restart track", ""),
-            ("─ Volume", "", ""),
-            ("+ / -", "Up / down 5%", ""),
-            ("m", "Mute", ""),
-            ("─ Library", "", ""),
-            ("f", "Search", ""),
-            ("/", "Browse folder", ""),
-            ("D", "Remove album", ""),
-            ("x", "Remove path", ""),
-            ("Ctrl+R", "Rescan", ""),
-            ("─ Misc", "", ""),
-            ("r / s", "Repeat / shuffle", ""),
-            ("Ctrl+K", "Help", ""),
-            ("Esc", "Close / cancel", ""),
-            ("q / Ctrl+C", "Quit", ""),
+        let items: &[(&str, &str)] = &[
+            ("─ Navigation", ""),
+            ("↑ ↓", "Move in panel"),
+            ("← → / Tab", "Switch panel"),
+            ("Enter", "Select / play"),
+            ("─ Playback", ""),
+            ("Space / k", "Play / pause"),
+            ("n / b", "Next / prev"),
+            ("j / l", "Seek -5s / +5s"),
+            ("p", "Restart track"),
+            ("─ Volume", ""),
+            ("+ / -", "Up / down 5%"),
+            ("m", "Mute"),
+            ("─ Library", ""),
+            ("f", "Search"),
+            ("/", "Browse folder"),
+            ("D", "Remove album"),
+            ("x", "Remove path"),
+            ("Ctrl+R", "Rescan"),
+            ("─ Misc", ""),
+            ("r / s", "Repeat / shuffle"),
+            ("Ctrl+K", "Help"),
+            ("Esc", "Close / cancel"),
+            ("q / Ctrl+C", "Quit"),
         ];
 
-        let mut rows = Vec::with_capacity(items.len());
-        for (a, b, _c) in items {
+        let mut rows: Vec<Line> = Vec::with_capacity(items.len());
+        for (a, b) in items {
             if a.starts_with("─") {
-                let sep = format!("  {} ", &a[2..]);
                 rows.push(Line::from(
-                    Span::styled(sep, Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        format!(" {} ", &a[2..]),
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    )
                 ));
             } else {
                 rows.push(Line::from(vec![
                     Span::styled(format!("  {:>12}", a), Style::default().fg(Color::Yellow)),
-                    Span::raw("  "),
+                    Span::raw("   "),
                     Span::styled(*b, Style::default().fg(Color::White)),
                 ]));
             }
         }
 
         let inner_h = inner.height as usize;
-        if rows.len() < inner_h {
+        if inner_h > 0 && rows.len() < inner_h {
             let pad = inner_h - rows.len();
             for _ in 0..pad.saturating_sub(1) {
                 rows.push(Line::from(Span::raw("")));
             }
-            rows.push(Line::from(Span::styled(
-                format!("  {:>width$}", "Esc / Ctrl+K  to close", width = w as usize - 6),
-                Style::default().fg(Color::DarkGray),
-            )));
+            rows.push(Line::from(
+                Span::styled("  Esc / Ctrl+K  to close", Style::default().fg(Color::DarkGray)),
+            ));
         }
 
         f.render_widget(Paragraph::new(rows), inner);
@@ -976,6 +977,10 @@ impl App {
 
             if key.code == KeyCode::Esc && self.show_help {
                 self.show_help = false;
+                return Ok(());
+            }
+
+            if self.show_help {
                 return Ok(());
             }
 
