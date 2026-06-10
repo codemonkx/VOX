@@ -819,7 +819,7 @@ impl App {
         let inner_w = 13 + 2 * (key_w + desc_w);
         let w = (inner_w + 2) as u16;
         let w = w.min(area.width.saturating_sub(6));
-        let h = 25u16.min(area.height.saturating_sub(4));
+        let h = 23u16.min(area.height.saturating_sub(4));
         let x = (area.width - w) / 2;
         let y = (area.height - h) / 2;
         let rect = Rect::new(x, y, w, h);
@@ -907,10 +907,6 @@ impl App {
         }
 
         rows.push(Line::from(Span::styled(bot, grid)));
-        rows.push(Line::from(Span::raw("")));
-        rows.push(Line::from(
-            Span::styled("  Esc / Ctrl+K  to close", Style::default().fg(Color::DarkGray)),
-        ));
 
         f.render_widget(Paragraph::new(rows), inner);
     }
