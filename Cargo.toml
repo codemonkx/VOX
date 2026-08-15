@@ -7,7 +7,8 @@ edition = "2024"
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
 crossterm = "0.28"
-rodio = "0.20"
+rodio = { version = "0.20", features = ["symphonia-all"] }
+symphonia = { version = "0.5", features = ["all"] }
 lofty = "0.22"
 walkdir = "2"
 serde = { version = "1", features = ["derive"] }
@@ -18,4 +19,6 @@ dirs = "6"
 rand = "0.8"
 rayon = "1"
 unicode-width = "0.2"
+unicode-segmentation = "1.12"
+
 

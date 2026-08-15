@@ -1,3 +1,6 @@
+pub mod lrc;
+pub mod text;
+
 pub fn format_duration(secs: f64) -> String {
     let secs = secs as u64;
     let h = secs / 3600;

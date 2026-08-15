@@ -25,7 +25,9 @@ use crate::audio::Player;
 use crate::config::Config;
 use crate::library::Library;
 use crate::metadata::Track;
+use crate::tui::theme::{ThemeKind, ThemePalette};
 use crate::utils;
+use crate::utils::lrc::LrcFile;
 
 struct AlbumInfo {
     name: String,
@@ -78,6 +80,9 @@ pub struct App {
     last_click_time: Instant,
 
     show_help: bool,
+    theme_kind: ThemeKind,
+    show_lyrics: bool,
+    current_lrc: Option<LrcFile>,
 }
 
 enum Focus {
@@ -91,6 +96,7 @@ impl App {
         let remove_paths = config.music_dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
 
         let browser_cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let theme_kind = ThemeKind::from_str(&config.theme);
 
         let mut app = Self {
             library,
@@ -124,6 +130,9 @@ impl App {
             last_click_row: 0,
             last_click_time: Instant::now(),
             show_help: false,
+            theme_kind,
+            show_lyrics: false,
+            current_lrc: None,
         };
         app.rebuild_album_info();
         app.load_album_tracks();
@@ -292,9 +301,22 @@ impl App {
         self.next_queued_path = next_track.path.clone();
     }
 
+    fn cycle_theme(&mut self) {
+        let all = ThemeKind::ALL;
+        let pos = all.iter().position(|k| *k == self.theme_kind).unwrap_or(0);
+        let next = all[(pos + 1) % all.len()];
+        self.theme_kind = next;
+        self.config.theme = next.to_str().to_string();
+        self.config.save().ok();
+        self.status_msg = format!(" Theme: {}", next.name());
+    }
+
     fn update_metadata(&mut self) {
         let path = self.current_path.clone();
         if path.is_empty() { return; }
+        if self.current_lrc.is_none() {
+            self.current_lrc = LrcFile::load_for_track(&path);
+        }
         let needs = match &self.current_meta {
             None => true,
             Some(m) => m.path != path,
@@ -304,12 +326,14 @@ impl App {
         if let Some(t) = self.album_tracks.iter().find(|t| t.path == path).cloned() {
             self.current_meta = Some(t);
             self.update_current_album_flag();
+            self.current_lrc = LrcFile::load_for_track(&path);
             return;
         }
         let p = std::path::Path::new(&path);
         if let Ok(meta) = crate::metadata::read_track(p) {
             self.current_meta = Some(meta);
             self.update_current_album_flag();
+            self.current_lrc = LrcFile::load_for_track(&path);
         }
     }
 
@@ -358,7 +382,11 @@ impl App {
             .split(chunks[1]);
 
         self.render_left_panel(f, main_chunks[0]);
-        self.render_right_panel(f, main_chunks[1]);
+        if self.show_lyrics {
+            self.render_lyrics_panel(f, main_chunks[1]);
+        } else {
+            self.render_right_panel(f, main_chunks[1]);
+        }
         self.render_bottom_bar(f, chunks[2]);
         self.render_help_bar(f, chunks[3]);
 
@@ -368,6 +396,7 @@ impl App {
     }
 
     fn render_top_bar(&self, f: &mut Frame, area: Rect) {
+        let theme = ThemePalette::for_kind(self.theme_kind);
         let msg = match self.input_mode {
             InputMode::Browse => {
                 format!(" Select folder: {}", self.browser_cwd.display())
@@ -382,7 +411,7 @@ impl App {
                 if !self.status_msg.is_empty() {
                     format!(" {}", self.status_msg)
                 } else {
-                    let mut parts: Vec<String> = vec![" [/] add folder  [x] remove path  [F] search".into()];
+                    let mut parts: Vec<String> = vec![format!(" [{}] theme  [y] lyrics  [/] add folder  [F] search", self.theme_kind.name())];
                     if self.config.repeat {
                         parts.push(" 🔁 repeat".into());
                     }
@@ -395,10 +424,10 @@ impl App {
             }
         };
         let style = match self.input_mode {
-            InputMode::Browse => Style::default().fg(Color::Black).bg(Color::Cyan),
-            InputMode::RemovePath => Style::default().fg(Color::Black).bg(Color::Red),
-            InputMode::Search => Style::default().fg(Color::Black).bg(Color::Yellow),
-            InputMode::None => Style::default().fg(Color::DarkGray),
+            InputMode::Browse => Style::default().fg(theme.text_highlight).bg(theme.accent),
+            InputMode::RemovePath => Style::default().fg(theme.text_highlight).bg(Color::Red),
+            InputMode::Search => Style::default().fg(theme.text_highlight).bg(Color::Yellow),
+            InputMode::None => Style::default().fg(theme.text_dim),
         };
         let bar = Paragraph::new(Line::from(Span::styled(msg, style)));
         f.render_widget(bar, area);
@@ -423,10 +452,11 @@ impl App {
     }
 
     fn render_meta_panel(&self, f: &mut Frame, area: Rect) {
+        let theme = ThemePalette::for_kind(self.theme_kind);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .style(Style::default().fg(Color::DarkGray));
+            .style(Style::default().fg(theme.border_unfocused));
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -444,15 +474,15 @@ impl App {
         let fields: Vec<(&str, String, Color)> = match meta {
             Some(t) => {
                 let mut f = vec![
-                    ("Name", t.title.clone(), Color::White),
-                    ("Album", t.album.clone(), Color::Yellow),
-                    ("Length", utils::format_duration(t.duration), Color::DarkGray),
-                    ("Bitrate", utils::format_bitrate(t.bitrate), Color::DarkGray),
-                    ("Sample", utils::format_sample_rate(t.sample_rate), Color::DarkGray),
-                    ("Artist", t.artist.clone(), Color::Cyan),
+                    ("Name", t.title.clone(), theme.text_primary),
+                    ("Album", t.album.clone(), theme.title),
+                    ("Length", utils::format_duration(t.duration), theme.text_secondary),
+                    ("Bitrate", utils::format_bitrate(t.bitrate), theme.text_secondary),
+                    ("Sample", utils::format_sample_rate(t.sample_rate), theme.text_secondary),
+                    ("Artist", t.artist.clone(), theme.accent_secondary),
                 ];
                 if let Some(ref tn) = track_idx {
-                    f.insert(2, ("Track", tn.clone(), Color::DarkGray));
+                    f.insert(2, ("Track", tn.clone(), theme.text_dim));
                 }
                 f
             }
@@ -465,7 +495,7 @@ impl App {
             let pad = " ".repeat(label_w - label.len());
             let lbl = format!("  {pad}{label}:");
             rows.push(Line::from(vec![
-                Span::styled(lbl, Style::default().fg(Color::DarkGray)),
+                Span::styled(lbl, Style::default().fg(theme.text_dim)),
                 Span::raw(" "),
                 Span::styled(value.clone(), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
             ]));
@@ -473,13 +503,14 @@ impl App {
         if rows.is_empty() {
             rows.push(Line::from(Span::styled(
                 "  No track selected",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.text_dim),
             )));
         }
         f.render_widget(Paragraph::new(rows), inner);
     }
 
     fn render_track_list(&self, f: &mut Frame, area: Rect) {
+        let theme = ThemePalette::for_kind(self.theme_kind);
         let in_search = matches!(self.input_mode, InputMode::Search);
         let tracks: &[Track] = if in_search { &self.search_results } else { &self.album_tracks };
         let sel = if in_search { self.selected_track.min(tracks.len().saturating_sub(1)) } else { self.selected_track };
@@ -498,9 +529,9 @@ impl App {
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
             .style(if matches!(self.focus, Focus::Tracks) || in_search {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.border_focused)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme.border_unfocused)
             });
 
         let inner = block.inner(area);
@@ -512,7 +543,7 @@ impl App {
                 else if self.album_info.is_empty() { "  Select an album on the right" }
                 else { "  No tracks" }
             )
-                .style(Style::default().fg(Color::DarkGray));
+                .style(Style::default().fg(theme.text_dim));
             f.render_widget(empty, inner);
             return;
         }
@@ -540,15 +571,15 @@ impl App {
                 let now = if is_playing { " ▶" } else { "" };
                 let content = format!("{prefix}{num} {:<title_w$} {:>5}{now}", t.title, dur, title_w = title_w);
                 let style = if is_playing && i != sel {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
                 } else if i == sel {
                     if matches!(self.focus, Focus::Tracks) || in_search {
-                        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+                        Style::default().fg(theme.text_highlight).bg(theme.accent).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::Cyan)
+                        Style::default().fg(theme.accent)
                     }
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(theme.text_primary)
                 };
                 ListItem::new(content).style(style)
             })
@@ -567,28 +598,29 @@ impl App {
                 1,
             );
             f.render_widget(
-                Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)))),
+                Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(theme.text_dim)))),
                 hint_area,
             );
         }
     }
 
     fn render_right_panel(&self, f: &mut Frame, area: Rect) {
+        let theme = ThemePalette::for_kind(self.theme_kind);
         let block = Block::default()
             .title(" Albums ")
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
             .style(if matches!(self.focus, Focus::Albums) {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.border_focused)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme.border_unfocused)
             });
         let inner = block.inner(area);
         f.render_widget(block, area);
 
         if self.album_info.is_empty() {
             let empty = Paragraph::new("  ⚠  No albums in library  ⚠\n\n  Press [/] to add a music folder\n  then [s] to scan it")
-                .style(Style::default().fg(Color::Yellow));
+                .style(Style::default().fg(theme.title));
             f.render_widget(empty, inner);
             return;
         }
@@ -612,12 +644,12 @@ impl App {
                 let content = format!("{prefix}{}  ({} tracks){now}", info.name, info.track_count);
                 let style = if i == self.selected_album {
                     if matches!(self.focus, Focus::Albums) {
-                        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+                        Style::default().fg(theme.text_highlight).bg(theme.accent).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::Cyan)
+                        Style::default().fg(theme.accent)
                     }
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(theme.text_primary)
                 };
                 ListItem::new(content).style(style)
             })
@@ -721,10 +753,11 @@ impl App {
     }
 
     fn render_bottom_bar(&self, f: &mut Frame, area: Rect) {
+        let theme = ThemePalette::for_kind(self.theme_kind);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .style(Style::default().fg(Color::DarkGray));
+            .style(Style::default().fg(theme.border_unfocused));
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -759,60 +792,228 @@ impl App {
             format!(" Vol: {vol_pct}% ")
         };
 
+        // Spectrum visualizer bars
+        let is_playing = !self.player.is_empty() && !self.player.is_paused();
+        let pos = self.player.current_position();
+        let viz_bars = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+        let mut viz_spans = Vec::new();
+        viz_spans.push(Span::raw(" "));
+        for i in 0..10 {
+            let val = if is_playing {
+                let s1 = ((pos * 7.5 + i as f64 * 0.8).sin() * 3.8 + (pos * 13.2 - i as f64 * 1.3).cos() * 2.8 + 4.2) * vol as f64;
+                (s1.max(0.0).min(8.0)) as usize
+            } else {
+                0
+            };
+            let bar_char = viz_bars[val.min(8)];
+            let color = if i < 3 {
+                theme.visualizer_low
+            } else if i < 7 {
+                theme.visualizer_mid
+            } else {
+                theme.visualizer_high
+            };
+            viz_spans.push(Span::styled(bar_char.to_string(), Style::default().fg(color)));
+        }
+        viz_spans.push(Span::raw(" "));
+
         let left = format!(" {tcount} items ");
         let center = format!(" {playing} ");
         let right = format!(" {vol_str}{codec}{br_str} | {elapsed} / {total} ");
 
         let l = rows[0].width as usize;
-        let l_len = left.len();
+        let l_len = left.len() + 12;
         let c_len = center.len();
         let r_len = right.len();
 
         let c_start = (l.saturating_sub(c_len)) / 2;
         let r_start = l.saturating_sub(r_len);
 
-        let mut spans = vec![Span::styled(left, Style::default().fg(Color::DarkGray))];
+        let mut spans = vec![Span::styled(left, Style::default().fg(theme.text_dim))];
+        spans.extend(viz_spans);
+
         if c_start > l_len {
             spans.push(Span::raw(" ".repeat(c_start - l_len)));
         }
-        spans.push(Span::styled(center, Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(center, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
         if r_start > c_start + c_len {
             spans.push(Span::raw(" ".repeat(r_start - c_start - c_len)));
         }
-        spans.push(Span::styled(right, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(right, Style::default().fg(theme.text_secondary)));
 
         f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
 
-        let pos = self.player.current_position();
+        // Gauge row with stereo VU meters
         let dur = self.player.current_duration();
         let effective = if dur > 0.0 { dur } else { pos };
         let ratio = if effective > 0.0 { (pos / effective).clamp(0.0, 1.0) } else { 0.0 };
+
+        let (vu_l, vu_r) = if is_playing {
+            let l_peak = ((pos * 9.0).sin().abs() * 0.7 + 0.3) * vol as f64;
+            let r_peak = ((pos * 11.0 + 1.2).cos().abs() * 0.7 + 0.3) * vol as f64;
+            ((l_peak * 8.0).max(1.0).min(8.0) as usize, (r_peak * 8.0).max(1.0).min(8.0) as usize)
+        } else {
+            (0, 0)
+        };
+        let l_meter = format!("L [{}{}]", "█".repeat(vu_l), "░".repeat(8 - vu_l));
+        let r_meter = format!("R [{}{}]", "█".repeat(vu_r), "░".repeat(8 - vu_r));
+
+        let vu_span = Line::from(vec![
+            Span::styled(format!(" {l_meter} "), Style::default().fg(theme.visualizer_low)),
+            Span::styled(format!("{r_meter} "), Style::default().fg(theme.visualizer_mid)),
+        ]);
+
+        let gauge_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(28), Constraint::Min(1)])
+            .split(rows[1]);
+
+        f.render_widget(Paragraph::new(vu_span), gauge_layout[0]);
         f.render_widget(
             Gauge::default()
-                .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+                .gauge_style(Style::default().fg(theme.progress_fill).bg(theme.progress_track))
                 .ratio(ratio),
-            rows[1],
+            gauge_layout[1],
         );
     }
 
     fn render_help_bar(&self, f: &mut Frame, area: Rect) {
+        let theme = ThemePalette::for_kind(self.theme_kind);
         let msg = match self.input_mode {
             InputMode::Browse => " [↑↓] navigate  [Enter] open folder  [s] scan this folder  [Esc] go up / cancel",
             InputMode::RemovePath => " [↑↓] select  [Enter] remove from library  [Esc] cancel",
             InputMode::Search => " [Esc] cancel search  [↑↓] results  [Enter] play  type to search",
-            InputMode::None => match self.focus {
-                Focus::Albums => " [/] add folder  [F] search  [D] remove album  [←→/Tab] switch  [↑↓] browse  [Enter] select  [k/Space] pause  [Q] quit",
-                Focus::Tracks => " [/] add folder  [F] search  [D] remove album  [←→/Tab] switch  [↑↓] tracks  [Enter] play  [j]←5s [l]→5s  [k/Space] pause  [N]next  [B]prev  [+/-]vol  [M]mute  [Q]quit",
-            },
+            InputMode::None => {
+                if self.show_lyrics {
+                    " [y] back to albums  [t] theme  [j/l] seek ±5s  [k/Space] pause  [n/b] next/prev  [Q] quit"
+                } else {
+                    match self.focus {
+                        Focus::Albums => " [t] theme  [y] lyrics  [/] add  [F] search  [Tab] switch  [↑↓] browse  [Enter] select  [k/Space] pause  [Q] quit",
+                        Focus::Tracks => " [t] theme  [y] lyrics  [/] add  [F] search  [Tab] switch  [↑↓] tracks  [Enter] play  [j/l] seek  [k/Space] pause  [n] next  [Q] quit",
+                    }
+                }
+            }
         };
         let bar = Paragraph::new(Line::from(Span::styled(
             msg,
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.text_dim),
         )));
         f.render_widget(bar, area);
     }
 
+    fn render_lyrics_panel(&self, f: &mut Frame, area: Rect) {
+        let theme = ThemePalette::for_kind(self.theme_kind);
+        let track_name = self.current_meta.as_ref().map(|m| m.title.as_str()).unwrap_or("No Track Playing");
+        let artist_name = self.current_meta.as_ref().map(|m| m.artist.as_str()).unwrap_or("Unknown Artist");
+        let album_name = self.current_meta.as_ref().map(|m| m.album.as_str()).unwrap_or("Unknown Album");
+
+        let title = format!(" 🎤 Lyrics · {track_name} ");
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .style(Style::default().fg(theme.accent));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        if inner.height < 4 || inner.width < 10 {
+            return;
+        }
+
+        let panel_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // Subtitle / meta header
+                Constraint::Min(1),    // Flowing lyrics lines
+            ])
+            .split(inner);
+
+        // Header with artist, album, and badge
+        let source_badge = if let Some(ref lrc) = self.current_lrc {
+            if lrc.lines.iter().any(|l| l.time_secs > 0.0) {
+                " [ 🎵 Synced ]"
+            } else {
+                " [ 📝 Embedded ]"
+            }
+        } else {
+            ""
+        };
+
+        let header_line = [
+            Span::styled(format!("  {} ", artist_name), Style::default().fg(theme.accent_secondary).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("· {} ", album_name), Style::default().fg(theme.text_dim)),
+            Span::styled(source_badge, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+        ];
+        let divider = Line::from(Span::styled("─".repeat(inner.width as usize), Style::default().fg(theme.border_unfocused)));
+        f.render_widget(Paragraph::new(vec![Line::raw(""), divider]), panel_layout[0]);
+        crate::utils::text::draw_spans_to_buffer(f.buffer_mut(), panel_layout[0].x, panel_layout[0].y, panel_layout[0].width, &header_line);
+
+        let lyrics_area = panel_layout[1];
+        if let Some(ref lrc) = self.current_lrc {
+            if lrc.lines.is_empty() {
+                let p = Paragraph::new("\n  No lyrics available for this track")
+                    .style(Style::default().fg(theme.text_dim));
+                f.render_widget(p, lyrics_area);
+                return;
+            }
+
+            let pos = self.player.current_position();
+            let active_idx = lrc.current_line_index(pos).unwrap_or(0);
+            let visible_h = lyrics_area.height as usize;
+            let items_per_page = (visible_h / 2).max(1);
+            let half = items_per_page / 2;
+            let start = active_idx.saturating_sub(half);
+
+            let buf = f.buffer_mut();
+            let mut cur_y = lyrics_area.y;
+            let max_y = lyrics_area.bottom();
+
+            for i in start..(start + items_per_page + 2) {
+                if cur_y >= max_y {
+                    break;
+                }
+                if let Some(line) = lrc.lines.get(i) {
+                    if i == active_idx {
+                        let spans = [
+                            Span::styled(" ▸ ", Style::default().fg(theme.accent_secondary).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                &line.text,
+                                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                            ),
+                        ];
+                        crate::utils::text::draw_spans_to_buffer(buf, lyrics_area.x, cur_y, lyrics_area.width, &spans);
+                    } else if i < active_idx {
+                        let spans = [
+                            Span::styled("   ", Style::default().fg(theme.text_dim)),
+                            Span::styled(&line.text, Style::default().fg(theme.text_dim)),
+                        ];
+                        crate::utils::text::draw_spans_to_buffer(buf, lyrics_area.x, cur_y, lyrics_area.width, &spans);
+                    } else {
+                        let spans = [
+                            Span::styled("   ", Style::default().fg(theme.text_primary)),
+                            Span::styled(&line.text, Style::default().fg(theme.text_primary)),
+                        ];
+                        crate::utils::text::draw_spans_to_buffer(buf, lyrics_area.x, cur_y, lyrics_area.width, &spans);
+                    }
+                    cur_y += 2;
+                }
+            }
+        } else {
+            let empty_text = vec![
+                Line::raw(""),
+                Line::from(Span::styled("  No embedded or external (.lrc) lyrics found.", Style::default().fg(theme.title).add_modifier(Modifier::BOLD))),
+                Line::raw(""),
+                Line::from(Span::styled("  VOX automatically checks embedded metadata tags in the file,", Style::default().fg(theme.text_secondary))),
+                Line::from(Span::styled("  or looks for a matching '.lrc' file in the album folder.", Style::default().fg(theme.text_dim))),
+                Line::raw(""),
+                Line::from(Span::styled("  Press [y] to toggle back to Album / Track list view.", Style::default().fg(theme.accent))),
+            ];
+            f.render_widget(Paragraph::new(empty_text), lyrics_area);
+        }
+    }
+
     fn render_help_overlay(&self, f: &mut Frame) {
+        let theme = ThemePalette::for_kind(self.theme_kind);
         let area = f.area();
         let key_w = 11usize;
         let desc_w = 17usize;
@@ -829,7 +1030,7 @@ impl App {
             .title(" Keybindings ")
             .borders(Borders::ALL)
             .border_set(border::PLAIN)
-            .style(Style::default().fg(Color::Cyan));
+            .style(Style::default().fg(theme.border_focused));
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
@@ -843,6 +1044,8 @@ impl App {
             ("p", "Restart track"),
             ("+ / -", "Up / Down 5%"),
             ("m", "Mute"),
+            ("t", "Cycle Theme"),
+            ("y", "Toggle Synced Lyrics"),
             ("f", "Search"),
             ("/", "Browse folder"),
             ("D", "Remove album"),
@@ -857,8 +1060,8 @@ impl App {
         let mid = (items.len() + 1) / 2;
         let mut rows: Vec<Line> = Vec::new();
 
-        let grid = Style::default().fg(Color::DarkGray);
-        let header_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        let grid = Style::default().fg(theme.text_dim);
+        let header_style = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
         let sep_fmt = || format!("├{}┼{}┼{}┼{}┤",
             "─".repeat(key_w + 2),
             "─".repeat(desc_w + 2),
@@ -897,10 +1100,10 @@ impl App {
             let (lk, ld) = items[i];
             let (rk, rd) = if i + mid < items.len() { items[i + mid] } else { ("", "") };
             rows.push(row(lk, ld, rk, rd,
-                Style::default().fg(Color::Yellow),
-                Style::default().fg(Color::White),
-                Style::default().fg(Color::Yellow),
-                Style::default().fg(Color::White)));
+                Style::default().fg(theme.title),
+                Style::default().fg(theme.text_primary),
+                Style::default().fg(theme.title),
+                Style::default().fg(theme.text_primary)));
             if i + 1 < mid {
                 rows.push(Line::from(Span::styled(sep_fmt(), grid)));
             }
@@ -1015,6 +1218,11 @@ impl App {
 
             if key.code == KeyCode::Esc && self.show_help {
                 self.show_help = false;
+                return Ok(());
+            }
+
+            if key.code == KeyCode::Esc && self.show_lyrics {
+                self.show_lyrics = false;
                 return Ok(());
             }
 
@@ -1139,6 +1347,14 @@ impl App {
 
             match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.exit = true,
+
+                KeyCode::Char('t') | KeyCode::Char('T') => {
+                    self.cycle_theme();
+                }
+
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.show_lyrics = !self.show_lyrics;
+                }
 
                 KeyCode::Char('/') => {
                     self.input_mode = InputMode::Browse;
@@ -1380,6 +1596,7 @@ impl App {
             Ok(()) => {
                 self.current_path = track.path.clone();
                 self.current_meta = Some(track.clone());
+                self.current_lrc = LrcFile::load_for_track(&track.path);
                 if let Some(idx) = self.album_tracks.iter().position(|t| t.path == track.path) {
                     self.selected_track = idx;
                 }
@@ -1444,9 +1661,5 @@ impl App {
 }
 
 fn truncate_path(p: &str, max_w: usize) -> String {
-    if max_w < 3 || p.len() <= max_w {
-        return p.to_string();
-    }
-    let keep = max_w.saturating_sub(2);
-    format!("..{}", &p[p.len().saturating_sub(keep)..])
+    crate::utils::text::truncate_path_safe(p, max_w)
 }

@@ -3,12 +3,18 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+fn default_theme() -> String {
+    "catppuccin".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub music_dirs: Vec<PathBuf>,
     pub volume: f32,
     pub shuffle: bool,
     pub repeat: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 impl Default for Config {
@@ -18,6 +24,7 @@ impl Default for Config {
             volume: 0.8,
             shuffle: false,
             repeat: false,
+            theme: default_theme(),
         }
     }
 }

@@ -9,21 +9,28 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use symphonia::core::audio::{AudioBufferRef, Signal};
+use symphonia::core::codecs::{Decoder as SymphoniaDecoderTrait, DecoderOptions};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
+use symphonia::core::units::Time;
 
 struct PositionTracker {
-    inner: Box<dyn Source<Item = i16> + Send>,
+    inner: Box<dyn Source<Item = f32> + Send>,
     samples: Arc<AtomicU64>,
 }
 
 impl PositionTracker {
-    fn new(inner: Box<dyn Source<Item = i16> + Send>, samples: Arc<AtomicU64>) -> Self {
+    fn new(inner: Box<dyn Source<Item = f32> + Send>, samples: Arc<AtomicU64>) -> Self {
         Self { inner, samples }
     }
 }
 
 impl Iterator for PositionTracker {
-    type Item = i16;
-    fn next(&mut self) -> Option<i16> {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
         let s = self.inner.next()?;
         self.samples.fetch_add(1, Ordering::Relaxed);
         Some(s)
@@ -111,9 +118,7 @@ impl Player {
     }
 
     fn stop_thread(&self) {
-        if let Some(h) = self.position_thread.lock().unwrap().take() {
-            h.join().ok();
-        }
+        let _ = self.position_thread.lock().unwrap().take();
     }
 
     pub fn play(&self, path: &Path, duration_override: Option<f64>, source_rate: u32) -> Result<()> {
@@ -121,16 +126,13 @@ impl Player {
 
         *self.current_path.lock().unwrap() = Some(path.to_string_lossy().to_string());
 
-        let is_dsf = path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("dsf"))
-            .unwrap_or(false);
+        let needs_ffmpeg = is_ffmpeg_required(path);
 
         // Bit-perfect: open stream at source rate if device supports it.
         // Only recreates the stream when the rate actually changes.
         let old_rate = *self.current_rate.lock().unwrap();
         *self.current_rate.lock().unwrap() = source_rate;
-        if !is_dsf && source_rate > 0 && old_rate != 0 && old_rate != source_rate
+        if !needs_ffmpeg && source_rate > 0 && old_rate != 0 && old_rate != source_rate
             && let Ok((s, h)) = create_stream_at_rate(source_rate) {
                 *self._stream.lock().unwrap() = Some(s);
                 *self.stream_handle.lock().unwrap() = Some(h.clone());
@@ -138,36 +140,16 @@ impl Player {
         let handle = self.stream_handle.lock().unwrap().clone()
             .ok_or_else(|| anyhow::anyhow!("no stream handle"))?;
 
-        let source: Box<dyn Source<Item = i16> + Send> = if is_dsf {
-            let rate = current_device_rate();
-            let output = std::process::Command::new("ffmpeg")
-                .args(["-i", &path.to_string_lossy(), "-ar", &rate.to_string(), "-f", "wav", "-"])
-                .output()
-                .context("Failed to run ffmpeg for DSF decoding")?;
-
-            if !output.status.success() {
-                anyhow::bail!("ffmpeg failed to decode DSF file");
-            }
-
-            let mut wav_data = output.stdout;
-            patch_wav_header(&mut wav_data);
-
-            let source = Decoder::new(Cursor::new(wav_data))?;
-            *self.channels.lock().unwrap() = source.channels();
-            Box::new(PositionTracker::new(Box::new(source), self.samples_consumed.clone()))
-        } else {
-            let file = File::open(path)?;
-            let source = Decoder::new(BufReader::new(file))?;
-            *self.channels.lock().unwrap() = source.channels();
-            Box::new(PositionTracker::new(Box::new(source), self.samples_consumed.clone()))
-        };
+        let raw_source = create_source_for_path(path)?;
+        *self.channels.lock().unwrap() = raw_source.channels();
+        let source: Box<dyn Source<Item = f32> + Send> = Box::new(PositionTracker::new(raw_source, self.samples_consumed.clone()));
 
         let duration = source.total_duration()
             .map(|d| d.as_secs_f64())
             .or(duration_override)
             .unwrap_or(0.0);
 
-        if is_dsf {
+        if needs_ffmpeg {
             *self.current_rate.lock().unwrap() = current_device_rate();
         }
 
@@ -202,7 +184,10 @@ impl Player {
         let dur = *self.current_duration.lock().unwrap();
         let target = seconds.min(dur).max(0.0);
 
-        self.stop_thread();
+        let handle = match self.stream_handle.lock().unwrap().clone() {
+            Some(h) => h,
+            None => return,
+        };
 
         let mut old = self.sink.lock().unwrap();
         if let Some(s) = old.take() {
@@ -210,86 +195,35 @@ impl Player {
         }
         drop(old);
 
-        let is_dsf = Path::new(&path_str).extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("dsf"))
-            .unwrap_or(false);
+        let raw_source = match create_seeked_source_for_path(Path::new(&path_str), target) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("seek failed for {path_str}: {e}");
+                return;
+            }
+        };
 
-        let handle_arc = self.stream_handle.lock().unwrap().clone();
-        let sink_arc = self.sink.clone();
-        let seek_offset_arc = self.seek_offset.clone();
-        let is_playing_arc = self.is_playing.clone();
-        let channels_arc = self.channels.clone();
-        let samples_consumed_arc = self.samples_consumed.clone();
+        *self.channels.lock().unwrap() = raw_source.channels();
+        self.samples_consumed.store(0, Ordering::Relaxed);
+        let source: Box<dyn Source<Item = f32> + Send> =
+            Box::new(PositionTracker::new(raw_source, self.samples_consumed.clone()));
 
-        let seek_id = self.seek_count.fetch_add(1, Ordering::Relaxed) + 1;
-        let current_seek_id = self.current_seek_id.clone();
+        let sink = match Sink::try_new(&handle) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("seek: Sink::try_new failed: {e}");
+                return;
+            }
+        };
 
-        thread::spawn(move || {
-            if seek_id != current_seek_id.load(Ordering::Relaxed) { return; }
-            let source: Box<dyn Source<Item = i16> + Send> = {
-                let mut cmd = std::process::Command::new("ffmpeg");
-                cmd.args(["-ss", &target.to_string(), "-i", &path_str]);
-                if is_dsf {
-                    cmd.args(["-ar", &current_device_rate().to_string()]);
-                }
-                cmd.args(["-f", "wav", "-"]);
+        sink.set_volume(1.0);
+        sink.append(source);
 
-                let output = match cmd.output() {
-                    Ok(o) if o.status.success() => o.stdout,
-                    _ => { eprintln!("seek: ffmpeg failed for {path_str}"); return; }
-                };
+        *self.sink.lock().unwrap() = Some(sink);
+        *self.seek_offset.lock().unwrap() = target;
+        self.is_playing.store(true, Ordering::SeqCst);
 
-                let mut wav_data = output;
-                patch_wav_header(&mut wav_data);
-
-                let source = match Decoder::new(Cursor::new(wav_data)) {
-                    Ok(d) => d,
-                    Err(_) => { eprintln!("seek: Decoder::new failed"); return; }
-                };
-                *channels_arc.lock().unwrap() = source.channels();
-                samples_consumed_arc.store(0, Ordering::Relaxed);
-                Box::new(PositionTracker::new(Box::new(source), samples_consumed_arc))
-            };
-
-            if seek_id != current_seek_id.load(Ordering::Relaxed) { return; }
-
-            let handle = match handle_arc {
-                Some(h) => h,
-                None => { eprintln!("seek: no stream handle"); return; }
-            };
-
-            let sink = match Sink::try_new(&handle) {
-                Ok(s) => s,
-                Err(_) => { eprintln!("seek: Sink::try_new failed"); return; }
-            };
-
-            sink.set_volume(1.0);
-            sink.append(source);
-
-            *sink_arc.lock().unwrap() = Some(sink);
-            *seek_offset_arc.lock().unwrap() = target;
-            is_playing_arc.store(true, Ordering::SeqCst);
-
-            let pos_sink = sink_arc.clone();
-            let pos_is_playing = is_playing_arc.clone();
-            let pos_seek_id = current_seek_id.clone();
-            thread::spawn(move || loop {
-                if seek_id != pos_seek_id.load(Ordering::Relaxed) { return; }
-                thread::sleep(Duration::from_millis(250));
-                let lock = pos_sink.lock().unwrap();
-                if let Some(ref s) = *lock {
-                    if s.empty() {
-                        pos_is_playing.store(false, Ordering::SeqCst);
-                        break;
-                    }
-                } else {
-                    pos_is_playing.store(false, Ordering::SeqCst);
-                    break;
-                }
-            });
-            current_seek_id.store(seek_id, Ordering::Relaxed);
-        });
+        self.start_position_thread();
     }
 
     pub fn queue_next(&self, path: &Path, source_rate: u32) {
@@ -309,44 +243,14 @@ impl Player {
         let next_dur = self.next_duration.clone();
 
         thread::spawn(move || {
-            let is_dsf = path_buf.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("dsf"))
-                .unwrap_or(false);
-
-            let source: Box<dyn Source<Item = i16> + Send> = if is_dsf {
-                let rate = current_device_rate();
-                let output = match std::process::Command::new("ffmpeg")
-                    .args(["-i", &path_buf.to_string_lossy(), "-ar", &rate.to_string(), "-f", "wav", "-"])
-                    .output()
-                {
-                    Ok(o) if o.status.success() => o.stdout,
-                    _ => { eprintln!("queue_next: ffmpeg failed for {path_buf:?}"); return; }
-                };
-                let mut wav_data = output;
-                patch_wav_header(&mut wav_data);
-                match Decoder::new(Cursor::new(wav_data)) {
-                    Ok(d) => {
-                        *next_channels.lock().unwrap() = d.channels();
-                        *next_dur.lock().unwrap() = d.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0);
-                        Box::new(PositionTracker::new(Box::new(d), samples))
-                    }
-                    Err(_) => { eprintln!("queue_next: Decoder::new failed for DSF"); return; }
-                }
-            } else {
-                let file = match File::open(&path_buf) {
-                    Ok(f) => f,
-                    Err(e) => { eprintln!("queue_next: open {path_buf:?}: {e}"); return; }
-                };
-                match Decoder::new(BufReader::new(file)) {
-                    Ok(d) => {
-                        *next_channels.lock().unwrap() = d.channels();
-                        *next_dur.lock().unwrap() = d.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0);
-                        Box::new(PositionTracker::new(Box::new(d), samples))
-                    }
-                    Err(e) => { eprintln!("queue_next: Decoder::new failed: {e}"); return; }
-                }
+            let raw_source = match create_source_for_path(&path_buf) {
+                Ok(s) => s,
+                Err(e) => { eprintln!("queue_next: failed for {path_buf:?}: {e}"); return; }
             };
+
+            *next_channels.lock().unwrap() = raw_source.channels();
+            *next_dur.lock().unwrap() = raw_source.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0);
+            let source: Box<dyn Source<Item = f32> + Send> = Box::new(PositionTracker::new(raw_source, samples));
 
             let lock = sink_arc.lock().unwrap();
             if let Some(ref sink) = *lock {
@@ -617,4 +521,302 @@ fn patch_wav_header(data: &mut [u8]) {
             break;
         }
     }
+}
+
+fn is_ffmpeg_required(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    ext == "dsf"
+}
+
+fn create_source_for_path(path: &Path) -> Result<Box<dyn Source<Item = f32> + Send>> {
+    // 1. Try CustomSymphoniaDecoder (direct Symphonia, zero rodio initialization panic bug)
+    if let Ok(dec) = CustomSymphoniaDecoder::new(path) {
+        return Ok(Box::new(dec));
+    }
+
+    // 2. Try rodio native decoder under catch_unwind
+    let p_buf = path.to_path_buf();
+    let safe_decoder = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let file = File::open(&p_buf).ok()?;
+        let d = Decoder::new(BufReader::new(file)).ok()?;
+        Some(d.convert_samples::<f32>())
+    }));
+
+    if let Ok(Some(source)) = safe_decoder {
+        return Ok(Box::new(source));
+    }
+
+    // 3. Fallback to ffmpeg if installed
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-i", &path.to_string_lossy(), "-c:a", "pcm_f32le", "-f", "wav", "-"])
+        .output()
+        .context("Failed to decode audio file with ffmpeg")?;
+
+    if !output.status.success() {
+        anyhow::bail!("Failed to decode audio file");
+    }
+
+    let mut wav_data = output.stdout;
+    patch_wav_header(&mut wav_data);
+    let source = Decoder::new(Cursor::new(wav_data))?.convert_samples::<f32>();
+    Ok(Box::new(source))
+}
+
+fn create_seeked_source_for_path(path: &Path, target_seconds: f64) -> Result<Box<dyn Source<Item = f32> + Send>> {
+    // 1. Try CustomSymphoniaDecoder with native seek (100% pure Rust)
+    if let Ok(mut dec) = CustomSymphoniaDecoder::new(path) {
+        if target_seconds > 0.0 {
+            let _ = dec.seek(target_seconds);
+        }
+        return Ok(Box::new(dec));
+    }
+
+    // 2. Try rodio native decoder with skip_duration
+    let p_buf = path.to_path_buf();
+    let safe_decoder = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let file = File::open(&p_buf).ok()?;
+        let d = Decoder::new(BufReader::new(file)).ok()?;
+        Some(d.convert_samples::<f32>())
+    }));
+
+    if let Ok(Some(source)) = safe_decoder {
+        if target_seconds > 0.0 {
+            let skip_dur = Duration::from_secs_f64(target_seconds);
+            return Ok(Box::new(source.skip_duration(skip_dur)));
+        }
+        return Ok(Box::new(source));
+    }
+
+    // 3. Fallback to ffmpeg if installed
+    let mut cmd = std::process::Command::new("ffmpeg");
+    if target_seconds > 0.0 {
+        cmd.args(["-ss", &target_seconds.to_string()]);
+    }
+    cmd.args(["-i", &path.to_string_lossy(), "-c:a", "pcm_f32le", "-f", "wav", "-"]);
+
+    let output = cmd.output().context("Failed to decode audio file with ffmpeg")?;
+    if !output.status.success() {
+        anyhow::bail!("Failed to decode audio file");
+    }
+
+    let mut wav_data = output.stdout;
+    patch_wav_header(&mut wav_data);
+    let source = Decoder::new(Cursor::new(wav_data))?.convert_samples::<f32>();
+    Ok(Box::new(source))
+}
+
+pub struct CustomSymphoniaDecoder {
+    format: Box<dyn FormatReader>,
+    decoder: Box<dyn SymphoniaDecoderTrait>,
+    track_id: u32,
+    sample_rate: u32,
+    channels: u16,
+    buffer: Vec<f32>,
+    buf_pos: usize,
+}
+
+impl CustomSymphoniaDecoder {
+    pub fn new(path: &Path) -> Result<Self> {
+        let file = File::open(path)?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+        let mut hint = Hint::new();
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+
+        let meta_opts = MetadataOptions::default();
+        let fmt_opts = FormatOptions::default();
+
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &fmt_opts, &meta_opts)
+            .map_err(|e| anyhow::anyhow!("Symphonia probe error: {e:?}"))?;
+
+        let format = probed.format;
+        let track = format.default_track().ok_or_else(|| anyhow::anyhow!("no default track"))?;
+        let track_id = track.id;
+        let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
+        let channels = track.codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
+
+        let dec_opts = DecoderOptions::default();
+        let decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params, &dec_opts)
+            .map_err(|e| anyhow::anyhow!("Symphonia decoder error: {e:?}"))?;
+
+        Ok(Self {
+            format,
+            decoder,
+            track_id,
+            sample_rate,
+            channels,
+            buffer: Vec::new(),
+            buf_pos: 0,
+        })
+    }
+
+    pub fn seek(&mut self, time_secs: f64) -> Result<()> {
+        let time = Time::from(time_secs);
+        let _ = self.format.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time,
+                track_id: Some(self.track_id),
+            },
+        ).or_else(|_| {
+            self.format.seek(
+                SeekMode::Coarse,
+                SeekTo::Time {
+                    time,
+                    track_id: Some(self.track_id),
+                },
+            )
+        });
+        self.decoder.reset();
+        self.buffer.clear();
+        self.buf_pos = 0;
+        Ok(())
+    }
+
+    fn refill(&mut self) -> bool {
+        loop {
+            let packet = match self.format.next_packet() {
+                Ok(p) => p,
+                Err(_) => return false,
+            };
+            if packet.track_id() != self.track_id {
+                continue;
+            }
+            match self.decoder.decode(&packet) {
+                Ok(audio_buf) => {
+                    self.buffer.clear();
+                    self.buf_pos = 0;
+                    match audio_buf {
+                        AudioBufferRef::F32(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    self.buffer.push(buf.chan(ch)[frame]);
+                                }
+                            }
+                        }
+                        AudioBufferRef::U8(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    let s = (buf.chan(ch)[frame] as f32 - 128.0) / 128.0;
+                                    self.buffer.push(s);
+                                }
+                            }
+                        }
+                        AudioBufferRef::U16(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    let s = (buf.chan(ch)[frame] as f32 - 32768.0) / 32768.0;
+                                    self.buffer.push(s);
+                                }
+                            }
+                        }
+                        AudioBufferRef::U24(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    let s = (buf.chan(ch)[frame].0 as f32 - 8388608.0) / 8388608.0;
+                                    self.buffer.push(s);
+                                }
+                            }
+                        }
+                        AudioBufferRef::U32(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    let s = (buf.chan(ch)[frame] as f32 - 2147483648.0) / 2147483648.0;
+                                    self.buffer.push(s);
+                                }
+                            }
+                        }
+                        AudioBufferRef::S8(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    let s = buf.chan(ch)[frame] as f32 / 128.0;
+                                    self.buffer.push(s);
+                                }
+                            }
+                        }
+                        AudioBufferRef::S16(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    let s = buf.chan(ch)[frame] as f32 / 32768.0;
+                                    self.buffer.push(s);
+                                }
+                            }
+                        }
+                        AudioBufferRef::S24(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    let s = buf.chan(ch)[frame].0 as f32 / 8388608.0;
+                                    self.buffer.push(s);
+                                }
+                            }
+                        }
+                        AudioBufferRef::S32(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    let s = buf.chan(ch)[frame] as f32 / 2147483648.0;
+                                    self.buffer.push(s);
+                                }
+                            }
+                        }
+                        AudioBufferRef::F64(buf) => {
+                            let num_frames = buf.frames();
+                            let num_channels = buf.spec().channels.count();
+                            for frame in 0..num_frames {
+                                for ch in 0..num_channels {
+                                    self.buffer.push(buf.chan(ch)[frame] as f32);
+                                }
+                            }
+                        }
+                    }
+                    if !self.buffer.is_empty() {
+                        return true;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+}
+
+impl Iterator for CustomSymphoniaDecoder {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        if self.buf_pos >= self.buffer.len() {
+            if !self.refill() {
+                return None;
+            }
+        }
+        let sample = self.buffer[self.buf_pos];
+        self.buf_pos += 1;
+        Some(sample)
+    }
+}
+
+impl Source for CustomSymphoniaDecoder {
+    fn current_frame_len(&self) -> Option<usize> { None }
+    fn channels(&self) -> u16 { self.channels }
+    fn sample_rate(&self) -> u32 { self.sample_rate }
+    fn total_duration(&self) -> Option<Duration> { None }
 }

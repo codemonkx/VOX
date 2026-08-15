@@ -55,7 +55,12 @@ pub fn read_track(path: &Path) -> Result<Track> {
             let duration = properties.duration().as_secs_f64();
             let bitrate = properties.audio_bitrate().unwrap_or(0);
             let sample_rate = properties.sample_rate().unwrap_or(0);
-            let codec = format_codec(file.file_type());
+            let mut codec = format_codec(file.file_type());
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if ext.eq_ignore_ascii_case("alac") {
+                    codec = "ALAC".into();
+                }
+            }
 
             Ok(Track {
                 path: path.to_string_lossy().to_string(),
@@ -125,6 +130,7 @@ fn read_with_ffprobe(path: &Path) -> Result<Track> {
     let codec_name = stream["codec_name"].as_str().unwrap_or("unknown");
     let codec: String = match codec_name {
         "dsd_lsbf_planar" | "dsd_lsbf" | "dsd_msbf_planar" | "dsd_msbf" => "DSD".into(),
+        "alac" => "ALAC".into(),
         other => other.to_uppercase(),
     };
 
@@ -151,12 +157,12 @@ fn format_codec(ft: FileType) -> String {
         FileType::Opus => "Opus".into(),
         FileType::Aiff => "AIFF".into(),
         FileType::Aac => "AAC".into(),
-        FileType::Mp4 => "AAC (M4A)".into(),
+        FileType::Mp4 => "AAC / ALAC (M4A)".into(),
         _ => format!("{ft:?}"),
     }
 }
 
-const SUPPORTED_EXTENSIONS: &[&str] = &["mp3", "flac", "wav", "ogg", "m4a", "aac", "opus", "dsf", "aiff", "aif"];
+const SUPPORTED_EXTENSIONS: &[&str] = &["mp3", "flac", "wav", "ogg", "m4a", "aac", "opus", "dsf", "aiff", "aif", "alac", "caf"];
 
 pub fn is_supported(path: &Path) -> bool {
     path.extension()
