@@ -123,6 +123,25 @@ vox --help                 # View all CLI commands
 
 ---
 
+## 🎨 Color Themes Gallery
+
+Press <kbd>t</kbd> anytime while listening to instantly cycle through **6 curated themes**:
+
+| Catppuccin Mocha | Nord |
+|:---:|:---:|
+| <img src="screenshots/theme_catppuccin.png" width="420" alt="Catppuccin Mocha"> | <img src="screenshots/theme_nord.png" width="420" alt="Nord"> |
+
+| Dracula | Tokyo Night |
+|:---:|:---:|
+| <img src="screenshots/theme_dracula.png" width="420" alt="Dracula"> | <img src="screenshots/theme_tokyonight.png" width="420" alt="Tokyo Night"> |
+
+| Gruvbox Dark | Cyberpunk Neon |
+|:---:|:---:|
+| <img src="screenshots/theme_gruvbox.png" width="420" alt="Gruvbox Dark"> | <img src="screenshots/theme_cyberpunk.png" width="420" alt="Cyberpunk Neon"> |
+
+---
+
+
 ## 🎧 Supported Audio Formats
 
 | Format | Extension | Bit Depth / Sample Rate | Engine |
