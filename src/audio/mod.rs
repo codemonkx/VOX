@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -17,14 +17,77 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
 
+pub mod spectrum;
+
+pub const VIZ_BUF_SIZE: usize = 2048;
+
+pub struct VisualizerBuffer {
+    buffer: Vec<AtomicU32>,
+    head: AtomicUsize,
+}
+
+impl Default for VisualizerBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VisualizerBuffer {
+    pub fn new() -> Self {
+        let mut buffer = Vec::with_capacity(VIZ_BUF_SIZE);
+        for _ in 0..VIZ_BUF_SIZE {
+            buffer.push(AtomicU32::new(0));
+        }
+        Self {
+            buffer,
+            head: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline(always)]
+    pub fn push(&self, s: f32) {
+        let idx = self.head.fetch_add(1, Ordering::Relaxed) & (VIZ_BUF_SIZE - 1);
+        self.buffer[idx].store(s.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn get_recent_samples(&self, count: usize) -> Vec<f32> {
+        let count = count.min(VIZ_BUF_SIZE);
+        let head = self.head.load(Ordering::Relaxed);
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let offset = count - 1 - i;
+            let idx = head.wrapping_sub(offset + 1) & (VIZ_BUF_SIZE - 1);
+            let bits = self.buffer[idx].load(Ordering::Relaxed);
+            out.push(f32::from_bits(bits));
+        }
+        out
+    }
+}
+
 struct PositionTracker {
     inner: Box<dyn Source<Item = f32> + Send>,
     samples: Arc<AtomicU64>,
+    viz_buf: Arc<VisualizerBuffer>,
+    channels: u16,
+    chan_idx: u16,
+    chan_accum: f32,
 }
 
 impl PositionTracker {
-    fn new(inner: Box<dyn Source<Item = f32> + Send>, samples: Arc<AtomicU64>) -> Self {
-        Self { inner, samples }
+    fn new(
+        inner: Box<dyn Source<Item = f32> + Send>,
+        samples: Arc<AtomicU64>,
+        viz_buf: Arc<VisualizerBuffer>,
+    ) -> Self {
+        let channels = inner.channels().max(1);
+        Self {
+            inner,
+            samples,
+            viz_buf,
+            channels,
+            chan_idx: 0,
+            chan_accum: 0.0,
+        }
     }
 }
 
@@ -33,6 +96,13 @@ impl Iterator for PositionTracker {
     fn next(&mut self) -> Option<f32> {
         let s = self.inner.next()?;
         self.samples.fetch_add(1, Ordering::Relaxed);
+        self.chan_accum += s;
+        self.chan_idx += 1;
+        if self.chan_idx >= self.channels {
+            self.viz_buf.push(self.chan_accum / (self.channels as f32));
+            self.chan_accum = 0.0;
+            self.chan_idx = 0;
+        }
         Some(s)
     }
 }
@@ -66,6 +136,7 @@ pub struct Player {
     seek_count: AtomicU64,
     current_seek_id: Arc<AtomicU64>,
     next_channels: Arc<Mutex<u16>>,
+    viz_buffer: Arc<VisualizerBuffer>,
 }
 
 impl Player {
@@ -93,6 +164,7 @@ impl Player {
             seek_count: AtomicU64::new(0),
             current_seek_id: Arc::new(AtomicU64::new(0)),
             next_channels: Arc::new(Mutex::new(2)),
+            viz_buffer: Arc::new(VisualizerBuffer::new()),
         })
     }
 
@@ -142,7 +214,11 @@ impl Player {
 
         let raw_source = create_source_for_path(path)?;
         *self.channels.lock().unwrap() = raw_source.channels();
-        let source: Box<dyn Source<Item = f32> + Send> = Box::new(PositionTracker::new(raw_source, self.samples_consumed.clone()));
+        let source: Box<dyn Source<Item = f32> + Send> = Box::new(PositionTracker::new(
+            raw_source,
+            self.samples_consumed.clone(),
+            self.viz_buffer.clone(),
+        ));
 
         let duration = source.total_duration()
             .map(|d| d.as_secs_f64())
@@ -205,8 +281,11 @@ impl Player {
 
         *self.channels.lock().unwrap() = raw_source.channels();
         self.samples_consumed.store(0, Ordering::Relaxed);
-        let source: Box<dyn Source<Item = f32> + Send> =
-            Box::new(PositionTracker::new(raw_source, self.samples_consumed.clone()));
+        let source: Box<dyn Source<Item = f32> + Send> = Box::new(PositionTracker::new(
+            raw_source,
+            self.samples_consumed.clone(),
+            self.viz_buffer.clone(),
+        ));
 
         let sink = match Sink::try_new(&handle) {
             Ok(s) => s,
@@ -241,6 +320,7 @@ impl Player {
         let next_channels = self.next_channels.clone();
         let sink_arc = self.sink.clone();
         let next_dur = self.next_duration.clone();
+        let viz_buf = self.viz_buffer.clone();
 
         thread::spawn(move || {
             let raw_source = match create_source_for_path(&path_buf) {
@@ -250,7 +330,7 @@ impl Player {
 
             *next_channels.lock().unwrap() = raw_source.channels();
             *next_dur.lock().unwrap() = raw_source.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0);
-            let source: Box<dyn Source<Item = f32> + Send> = Box::new(PositionTracker::new(raw_source, samples));
+            let source: Box<dyn Source<Item = f32> + Send> = Box::new(PositionTracker::new(raw_source, samples, viz_buf));
 
             let lock = sink_arc.lock().unwrap();
             if let Some(ref sink) = *lock {
@@ -433,6 +513,15 @@ impl Player {
         let inst = (avg as f64 * velocity) as u32;
         inst.max(avg.saturating_sub(100)).min(avg + 100)
     }
+
+    pub fn get_visualizer_samples(&self, count: usize) -> Vec<f32> {
+        self.viz_buffer.get_recent_samples(count)
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        *self.current_rate.lock().unwrap()
+    }
+
     pub fn set_duration(&self, dur: f64) {
         *self.current_duration.lock().unwrap() = dur;
     }

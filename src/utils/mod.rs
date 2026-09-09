@@ -1,4 +1,3 @@
-pub mod lrc;
 pub mod text;
 
 pub fn format_duration(secs: f64) -> String {

@@ -2,7 +2,6 @@ use std::path::Path;
 use vox::audio::{CustomSymphoniaDecoder, Player};
 use vox::tui::theme::ThemeKind;
 use vox::utils;
-use vox::utils::lrc::LrcFile;
 use vox::utils::text;
 
 #[test]
@@ -25,32 +24,7 @@ fn test_96khz_playback_speed_and_specs() {
     player.stop();
 
     println!("96kHz playback: elapsed {pos:.2}s after 1000ms real time");
-    assert!(pos >= 0.5 && pos <= 1.5, "Playback position must progress in real-time (got {pos}s)");
-}
-
-#[test]
-fn test_lrc_synced_vs_unsynced() {
-    // 1. Synchronized LRC
-    let synced_lrc = r#"
-[00:12.50]Line one
-[00:15.80]Line two
-[00:20.10]Line three
-"#;
-    let parsed_synced = LrcFile::parse(synced_lrc);
-    assert!(parsed_synced.is_synced, "Should detect synced timestamps");
-    assert_eq!(parsed_synced.lines.len(), 3);
-    assert!((parsed_synced.lines[0].time_secs - 12.5).abs() < 0.01);
-    assert!((parsed_synced.lines[1].time_secs - 15.8).abs() < 0.01);
-
-    // 2. Unsynchronized embedded lyrics
-    let unsynced_lrc = r#"
-First line of lyrics
-Second line of lyrics
-Third line of lyrics
-"#;
-    let parsed_unsynced = LrcFile::parse(unsynced_lrc);
-    assert!(!parsed_unsynced.is_synced, "Should detect unsynced plain text lyrics");
-    assert_eq!(parsed_unsynced.lines.len(), 3);
+    assert!((0.5..=1.5).contains(&pos), "Playback position must progress in real-time (got {pos}s)");
 }
 
 #[test]
@@ -159,3 +133,42 @@ fn test_track_numbers_and_multiword_search() {
     drop(db);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
+
+#[test]
+fn test_visualizer_buffer_ring() {
+    let buf = vox::audio::VisualizerBuffer::new();
+    for i in 0..100 {
+        buf.push(i as f32);
+    }
+    let recent = buf.get_recent_samples(10);
+    assert_eq!(recent.len(), 10);
+    for (idx, &sample) in recent.iter().enumerate() {
+        assert_eq!(sample, (90 + idx) as f32);
+    }
+}
+
+#[test]
+fn test_spectrum_analyzer_fft() {
+    let mut analyzer = vox::audio::spectrum::SpectrumAnalyzer::new(10);
+    let sample_rate = 44100;
+    let freq = 100.0f32; // Bass frequency
+    let samples: Vec<f32> = (0..1024)
+        .map(|n| (2.0 * std::f32::consts::PI * freq * n as f32 / sample_rate as f32).sin() * 0.8)
+        .collect();
+
+    let bars = analyzer.compute_bars(&samples, sample_rate, true);
+    assert_eq!(bars.len(), 10);
+    // Bass bars (0..3) should have substantial energy
+    let bass_max = bars[0..3].iter().copied().max().unwrap_or(0);
+    let treble_max = bars[7..10].iter().copied().max().unwrap_or(0);
+    assert!(bass_max > treble_max, "100 Hz tone must produce higher bass energy than treble");
+
+    // Test silence decay
+    let mut decayed_bars = Vec::new();
+    for _ in 0..25 {
+        decayed_bars = analyzer.compute_bars(&[], sample_rate, false);
+    }
+    let total_remaining: usize = decayed_bars.iter().sum();
+    assert_eq!(total_remaining, 0, "Bars must decay to zero during silence");
+}
+

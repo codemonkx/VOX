@@ -27,11 +27,9 @@ use crate::library::Library;
 use crate::metadata::Track;
 use crate::tui::theme::{ThemeKind, ThemePalette};
 use crate::utils;
-use crate::utils::lrc::LrcFile;
 
 struct AlbumInfo {
     name: String,
-    track_count: usize,
     has_current: bool,
 }
 
@@ -81,8 +79,7 @@ pub struct App {
 
     show_help: bool,
     theme_kind: ThemeKind,
-    show_lyrics: bool,
-    current_lrc: Option<LrcFile>,
+    spectrum_analyzer: std::cell::RefCell<crate::audio::spectrum::SpectrumAnalyzer>,
 }
 
 enum Focus {
@@ -131,8 +128,7 @@ impl App {
             last_click_time: Instant::now(),
             show_help: false,
             theme_kind,
-            show_lyrics: false,
-            current_lrc: None,
+            spectrum_analyzer: std::cell::RefCell::new(crate::audio::spectrum::SpectrumAnalyzer::new(10)),
         };
         app.rebuild_album_info();
         app.load_album_tracks();
@@ -164,11 +160,10 @@ impl App {
         let current_album = self.current_meta.as_ref().map(|m| m.album.as_str());
         let info = self.library.album_info().unwrap_or_default();
         self.total_tracks = info.iter().map(|(_, c)| c).sum();
-        self.album_info = info.into_iter().map(|(name, count)| {
+        self.album_info = info.into_iter().map(|(name, _)| {
             AlbumInfo {
                 has_current: Some(name.as_str()) == current_album,
                 name,
-                track_count: count,
             }
         }).collect();
 
@@ -319,9 +314,6 @@ impl App {
     fn update_metadata(&mut self) {
         let path = self.current_path.clone();
         if path.is_empty() { return; }
-        if self.current_lrc.is_none() {
-            self.current_lrc = LrcFile::load_for_track(&path);
-        }
         let needs = match &self.current_meta {
             None => true,
             Some(m) => m.path != path,
@@ -331,14 +323,12 @@ impl App {
         if let Some(t) = self.album_tracks.iter().find(|t| t.path == path).cloned() {
             self.current_meta = Some(t);
             self.update_current_album_flag();
-            self.current_lrc = LrcFile::load_for_track(&path);
             return;
         }
         let p = std::path::Path::new(&path);
         if let Ok(meta) = crate::metadata::read_track(p) {
             self.current_meta = Some(meta);
             self.update_current_album_flag();
-            self.current_lrc = LrcFile::load_for_track(&path);
         }
     }
 
@@ -387,11 +377,7 @@ impl App {
             .split(chunks[1]);
 
         self.render_left_panel(f, main_chunks[0]);
-        if self.show_lyrics {
-            self.render_lyrics_panel(f, main_chunks[1]);
-        } else {
-            self.render_right_panel(f, main_chunks[1]);
-        }
+        self.render_right_panel(f, main_chunks[1]);
         self.render_bottom_bar(f, chunks[2]);
         self.render_help_bar(f, chunks[3]);
 
@@ -416,7 +402,7 @@ impl App {
                 if !self.status_msg.is_empty() {
                     format!(" {}", self.status_msg)
                 } else {
-                    let mut parts: Vec<String> = vec![format!(" [{}] theme  [y] lyrics  [/] add folder  [F] search", self.theme_kind.name())];
+                    let mut parts: Vec<String> = vec![format!(" [{}] theme  [/] add folder  [F] search", self.theme_kind.name())];
                     if self.config.repeat {
                         parts.push(" 🔁 repeat".into());
                     }
@@ -447,9 +433,10 @@ impl App {
             self.render_browser(f, area);
             return;
         }
+        let meta_h = if area.height >= 34 { 12 } else { 10 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(10), Constraint::Min(1)])
+            .constraints([Constraint::Length(meta_h), Constraint::Min(1)])
             .split(area);
 
         self.render_meta_panel(f, chunks[0]);
@@ -506,10 +493,8 @@ impl App {
         let mut rows: Vec<Line> = Vec::new();
         for (label, value, color) in &fields {
             let pad = " ".repeat(label_w - label.len());
-            let lbl = format!("  {pad}{label}:");
             rows.push(Line::from(vec![
-                Span::styled(lbl, Style::default().fg(theme.text_dim)),
-                Span::raw(" "),
+                Span::styled(format!("  {pad}{label}: "), Style::default().fg(theme.text_dim)),
                 Span::styled(value.clone(), Style::default().fg(*color).add_modifier(Modifier::BOLD)),
             ]));
         }
@@ -659,7 +644,7 @@ impl App {
             .map(|(i, info)| {
                 let prefix = if i == self.selected_album { "▸ " } else { "  " };
                 let now = if info.has_current { " ♪" } else { "" };
-                let content = format!("{prefix}{}  ({} tracks){now}", info.name, info.track_count);
+                let content = format!("{prefix}{}{now}", info.name);
                 let style = if i == self.selected_album {
                     if matches!(self.focus, Focus::Albums) {
                         Style::default().fg(theme.text_highlight).bg(theme.accent).add_modifier(Modifier::BOLD)
@@ -794,7 +779,8 @@ impl App {
         } else {
             String::new()
         };
-        let elapsed = utils::format_duration(self.player.current_position());
+        let pos = self.player.current_position();
+        let elapsed = utils::format_duration(pos);
         let total = utils::format_duration(self.player.current_duration());
 
         let playing = match &self.current_meta {
@@ -810,19 +796,16 @@ impl App {
             format!(" Vol: {vol_pct}% ")
         };
 
-        // Spectrum visualizer bars
+        // Spectrum visualizer bars (Real FFT audio analysis)
         let is_playing = !self.player.is_empty() && !self.player.is_paused();
-        let pos = self.player.current_position();
+        let samples = self.player.get_visualizer_samples(1024);
+        let sample_rate = self.player.sample_rate();
+        let bar_levels = self.spectrum_analyzer.borrow_mut().compute_bars(&samples, sample_rate, is_playing);
+
         let viz_bars = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
         let mut viz_spans = Vec::new();
         viz_spans.push(Span::raw(" "));
-        for i in 0..10 {
-            let val = if is_playing {
-                let s1 = ((pos * 7.5 + i as f64 * 0.8).sin() * 3.8 + (pos * 13.2 - i as f64 * 1.3).cos() * 2.8 + 4.2) * vol as f64;
-                s1.clamp(0.0, 8.0) as usize
-            } else {
-                0
-            };
+        for (i, &val) in bar_levels.iter().enumerate() {
             let bar_char = viz_bars[val.min(8)];
             let color = if i < 3 {
                 theme.visualizer_low
@@ -866,10 +849,15 @@ impl App {
         let effective = if dur > 0.0 { dur } else { pos };
         let ratio = if effective > 0.0 { (pos / effective).clamp(0.0, 1.0) } else { 0.0 };
 
-        let (vu_l, vu_r) = if is_playing {
-            let l_peak = ((pos * 9.0).sin().abs() * 0.7 + 0.3) * vol as f64;
-            let r_peak = ((pos * 11.0 + 1.2).cos().abs() * 0.7 + 0.3) * vol as f64;
-            ((l_peak * 8.0).clamp(1.0, 8.0) as usize, (r_peak * 8.0).clamp(1.0, 8.0) as usize)
+        let (vu_l, vu_r) = if is_playing && !samples.is_empty() {
+            let half = samples.len() / 2;
+            let rms_l = (samples[..half].iter().map(|&s| s * s).sum::<f32>() / half.max(1) as f32).sqrt();
+            let rms_r = (samples[half..].iter().map(|&s| s * s).sum::<f32>() / (samples.len() - half).max(1) as f32).sqrt();
+            let peak_l = samples[..half].iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+            let peak_r = samples[half..].iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+            let l_lvl = ((rms_l * 3.5 + peak_l * 1.5) * 6.0).clamp(0.0, 8.0) as usize;
+            let r_lvl = ((rms_r * 3.5 + peak_r * 1.5) * 6.0).clamp(0.0, 8.0) as usize;
+            (l_lvl, r_lvl)
         } else {
             (0, 0)
         };
@@ -901,133 +889,16 @@ impl App {
             InputMode::Browse => " [↑↓] navigate  [Enter] open folder  [s] scan this folder  [Esc] go up / cancel",
             InputMode::RemovePath => " [↑↓] select  [Enter] remove from library  [Esc] cancel",
             InputMode::Search => " [Esc] cancel search  [↑↓] results  [Enter] play  type to search",
-            InputMode::None => {
-                if self.show_lyrics {
-                    " [y] back to albums  [t] theme  [j/l] seek ±5s  [k/Space] pause  [n/b] next/prev  [Q] quit"
-                } else {
-                    match self.focus {
-                        Focus::Albums => " [t] theme  [y] lyrics  [/] add  [F] search  [Tab] switch  [↑↓] browse  [Enter] select  [k/Space] pause  [Q] quit",
-                        Focus::Tracks => " [t] theme  [y] lyrics  [/] add  [F] search  [Tab] switch  [↑↓] tracks  [Enter] play  [j/l] seek  [k/Space] pause  [n] next  [Q] quit",
-                    }
-                }
-            }
+            InputMode::None => match self.focus {
+                Focus::Albums => " [t] theme  [/] add  [F] search  [Tab] switch  [↑↓] browse  [Enter] select  [k/Space] pause  [Q] quit",
+                Focus::Tracks => " [t] theme  [/] add  [F] search  [Tab] switch  [↑↓] tracks  [Enter] play  [j/l] seek  [k/Space] pause  [n] next  [Q] quit",
+            },
         };
         let bar = Paragraph::new(Line::from(Span::styled(
             msg,
             Style::default().fg(theme.text_dim),
         )));
         f.render_widget(bar, area);
-    }
-
-    fn render_lyrics_panel(&self, f: &mut Frame, area: Rect) {
-        let theme = ThemePalette::for_kind(self.theme_kind);
-        let track_name = self.current_meta.as_ref().map(|m| m.title.as_str()).unwrap_or("No Track Playing");
-        let artist_name = self.current_meta.as_ref().map(|m| m.artist.as_str()).unwrap_or("Unknown Artist");
-        let album_name = self.current_meta.as_ref().map(|m| m.album.as_str()).unwrap_or("Unknown Album");
-
-        let title = format!(" 🎤 Lyrics · {track_name} ");
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_set(border::ROUNDED)
-            .style(Style::default().fg(theme.accent));
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        if inner.height < 4 || inner.width < 10 {
-            return;
-        }
-
-        let panel_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2), // Subtitle / meta header
-                Constraint::Min(1),    // Flowing lyrics lines
-            ])
-            .split(inner);
-
-        // Header with artist, album, and badge
-        let source_badge = if let Some(ref lrc) = self.current_lrc {
-            if lrc.is_synced {
-                " [ 🎵 Synced ]"
-            } else {
-                " [ 📝 Embedded ]"
-            }
-        } else {
-            ""
-        };
-
-        let header_line = [
-            Span::styled(format!("  {} ", artist_name), Style::default().fg(theme.accent_secondary).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("· {} ", album_name), Style::default().fg(theme.text_dim)),
-            Span::styled(source_badge, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
-        ];
-        let divider = Line::from(Span::styled("─".repeat(inner.width as usize), Style::default().fg(theme.border_unfocused)));
-        f.render_widget(Paragraph::new(vec![Line::raw(""), divider]), panel_layout[0]);
-        crate::utils::text::draw_spans_to_buffer(f.buffer_mut(), panel_layout[0].x, panel_layout[0].y, panel_layout[0].width, &header_line);
-
-        let lyrics_area = panel_layout[1];
-        if let Some(ref lrc) = self.current_lrc {
-            if lrc.lines.is_empty() {
-                let p = Paragraph::new("\n  No lyrics available for this track")
-                    .style(Style::default().fg(theme.text_dim));
-                f.render_widget(p, lyrics_area);
-                return;
-            }
-
-            let pos = self.player.current_position();
-            let active_idx = lrc.current_line_index(pos).unwrap_or(0);
-            let visible_h = lyrics_area.height as usize;
-            let items_per_page = (visible_h / 2).max(1);
-            let half = items_per_page / 2;
-            let start = active_idx.saturating_sub(half);
-
-            let buf = f.buffer_mut();
-            let mut cur_y = lyrics_area.y;
-            let max_y = lyrics_area.bottom();
-
-            for i in start..(start + items_per_page + 2) {
-                if cur_y >= max_y {
-                    break;
-                }
-                if let Some(line) = lrc.lines.get(i) {
-                    if i == active_idx {
-                        let spans = [
-                            Span::styled(" ▸ ", Style::default().fg(theme.accent_secondary).add_modifier(Modifier::BOLD)),
-                            Span::styled(
-                                &line.text,
-                                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-                            ),
-                        ];
-                        crate::utils::text::draw_spans_to_buffer(buf, lyrics_area.x, cur_y, lyrics_area.width, &spans);
-                    } else if i < active_idx {
-                        let spans = [
-                            Span::styled("   ", Style::default().fg(theme.text_dim)),
-                            Span::styled(&line.text, Style::default().fg(theme.text_dim)),
-                        ];
-                        crate::utils::text::draw_spans_to_buffer(buf, lyrics_area.x, cur_y, lyrics_area.width, &spans);
-                    } else {
-                        let spans = [
-                            Span::styled("   ", Style::default().fg(theme.text_primary)),
-                            Span::styled(&line.text, Style::default().fg(theme.text_primary)),
-                        ];
-                        crate::utils::text::draw_spans_to_buffer(buf, lyrics_area.x, cur_y, lyrics_area.width, &spans);
-                    }
-                    cur_y += 2;
-                }
-            }
-        } else {
-            let empty_text = vec![
-                Line::raw(""),
-                Line::from(Span::styled("  No embedded or external (.lrc) lyrics found.", Style::default().fg(theme.title).add_modifier(Modifier::BOLD))),
-                Line::raw(""),
-                Line::from(Span::styled("  VOX automatically checks embedded metadata tags in the file,", Style::default().fg(theme.text_secondary))),
-                Line::from(Span::styled("  or looks for a matching '.lrc' file in the album folder.", Style::default().fg(theme.text_dim))),
-                Line::raw(""),
-                Line::from(Span::styled("  Press [y] to toggle back to Album / Track list view.", Style::default().fg(theme.accent))),
-            ];
-            f.render_widget(Paragraph::new(empty_text), lyrics_area);
-        }
     }
 
     fn render_help_overlay(&self, f: &mut Frame) {
@@ -1038,7 +909,7 @@ impl App {
         let inner_w = 13 + 2 * (key_w + desc_w);
         let w = (inner_w + 2) as u16;
         let w = w.min(area.width.saturating_sub(6));
-        let h = 23u16.min(area.height.saturating_sub(4));
+        let h = 25u16.min(area.height.saturating_sub(4));
         let x = (area.width - w) / 2;
         let y = (area.height - h) / 2;
         let rect = Rect::new(x, y, w, h);
@@ -1063,7 +934,6 @@ impl App {
             ("+ / -", "Up / Down 5%"),
             ("m", "Mute"),
             ("t", "Cycle Theme"),
-            ("y", "Toggle Synced Lyrics"),
             ("f", "Search"),
             ("/", "Browse folder"),
             ("D", "Remove album"),
@@ -1239,11 +1109,6 @@ impl App {
                 return Ok(());
             }
 
-            if key.code == KeyCode::Esc && self.show_lyrics {
-                self.show_lyrics = false;
-                return Ok(());
-            }
-
             if self.show_help {
                 return Ok(());
             }
@@ -1368,10 +1233,6 @@ impl App {
 
                 KeyCode::Char('t') | KeyCode::Char('T') => {
                     self.cycle_theme();
-                }
-
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    self.show_lyrics = !self.show_lyrics;
                 }
 
                 KeyCode::Char('/') => {
@@ -1614,7 +1475,6 @@ impl App {
             Ok(()) => {
                 self.current_path = track.path.clone();
                 self.current_meta = Some(track.clone());
-                self.current_lrc = LrcFile::load_for_track(&track.path);
                 if let Some(idx) = self.album_tracks.iter().position(|t| t.path == track.path) {
                     self.selected_track = idx;
                 }

@@ -1,6 +1,5 @@
 use ratatui::buffer::Buffer;
 use ratatui::style::Style;
-use ratatui::text::Span;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
@@ -117,58 +116,6 @@ pub fn draw_text_to_buffer(
             cell.set_style(style);
         }
         cur_x += w as u16;
-    }
-
-    (cur_x - x) as usize
-}
-
-/// Renders a series of Spans into a Ratatui buffer as contiguous text units to prevent
-/// cursor jump desynchronization in terminal emulators.
-pub fn draw_spans_to_buffer(
-    buf: &mut Buffer,
-    x: u16,
-    y: u16,
-    max_w: u16,
-    spans: &[Span],
-) -> usize {
-    let mut cur_x = x;
-    let end_x = x.saturating_add(max_w);
-
-    for span in spans {
-        if cur_x >= end_x || span.content.is_empty() {
-            continue;
-        }
-
-        let total_span_w = str_display_width(&span.content) as u16;
-        if cur_x + total_span_w > end_x {
-            let available = (end_x - cur_x) as usize;
-            let truncated = truncate_to_width(&span.content, available);
-            let trunc_w = str_display_width(&truncated) as u16;
-            if let Some(cell) = buf.cell_mut((cur_x, y)) {
-                cell.set_symbol(&truncated);
-                cell.set_style(span.style);
-            }
-            for i in 1..trunc_w {
-                if let Some(cell) = buf.cell_mut((cur_x + i, y)) {
-                    cell.set_symbol("");
-                    cell.set_style(span.style);
-                }
-            }
-            cur_x += trunc_w;
-            break;
-        } else {
-            if let Some(cell) = buf.cell_mut((cur_x, y)) {
-                cell.set_symbol(&span.content);
-                cell.set_style(span.style);
-            }
-            for i in 1..total_span_w {
-                if let Some(cell) = buf.cell_mut((cur_x + i, y)) {
-                    cell.set_symbol("");
-                    cell.set_style(span.style);
-                }
-            }
-            cur_x += total_span_w;
-        }
     }
 
     (cur_x - x) as usize
