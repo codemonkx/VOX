@@ -23,16 +23,25 @@ fn open_db(db_path: &std::path::Path) -> Result<Database> {
         Err(e) => {
             let msg = format!("{e}");
             if msg.contains("could not acquire lock") {
-                eprintln!("Database is locked. Removing stale lock...");
-                // Remove the entire database directory to break the stale lock
-                let _ = std::fs::remove_dir_all(db_path);
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                Database::open(db_path)
+                anyhow::bail!(
+                    "VOX database is locked. Another instance of VOX is currently running. Please close it and try again."
+                );
             } else {
                 Err(e)
             }
         }
     }
+}
+
+fn setup_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let mut stdout = std::io::stdout();
+        let _ = crossterm::ExecutableCommand::execute(&mut stdout, crossterm::event::DisableMouseCapture);
+        let _ = crossterm::ExecutableCommand::execute(&mut stdout, crossterm::terminal::LeaveAlternateScreen);
+        default_hook(panic_info);
+    }));
 }
 
 fn main() -> Result<()> {
@@ -53,6 +62,9 @@ fn main() -> Result<()> {
     if cli.command.is_some() {
         return handle_command(&cli, &db);
     }
+
+    // Install panic hook to restore terminal in case of unexpected panic
+    setup_panic_hook();
 
     // Otherwise, launch the TUI (ncmpcpp-style interface)
     let player = audio::Player::new()?;

@@ -199,22 +199,27 @@ impl App {
         stdout.execute(EnableMouseCapture)?;
         let mut terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
 
-        while !self.exit {
-            self.player.sync_volume_from_system();
-            terminal.draw(|f| self.render(f))?;
+        let res = (|| -> Result<()> {
+            while !self.exit {
+                self.player.sync_volume_from_system();
+                terminal.draw(|f| self.render(f))?;
 
-            self.check_track_end();
-            self.check_scan_complete();
-            self.update_metadata();
-            self.handle_events()?;
-        }
+                self.check_track_end();
+                self.check_scan_complete();
+                self.update_metadata();
+                self.handle_events()?;
+            }
+            Ok(())
+        })();
 
-        disable_raw_mode()?;
+        let _ = disable_raw_mode();
         let mut stdout = std::io::stdout();
-        stdout.execute(DisableMouseCapture)?;
-        stdout.execute(LeaveAlternateScreen)?;
-        println!("Bye!");
-        Ok(())
+        let _ = stdout.execute(DisableMouseCapture);
+        let _ = stdout.execute(LeaveAlternateScreen);
+        if res.is_ok() {
+            println!("Bye!");
+        }
+        res
     }
 
     fn check_track_end(&mut self) {
@@ -468,8 +473,16 @@ impl App {
         let track_idx = self
             .current_meta
             .as_ref()
-            .and_then(|m| self.album_tracks.iter().position(|t| t.path == m.path))
-            .map(|i| format!("Track {}", i + 1));
+            .map(|m| {
+                if let Some(tn) = m.track_number {
+                    format!("Track {tn}")
+                } else {
+                    self.album_tracks.iter().position(|t| t.path == m.path)
+                        .map(|i| format!("Track {}", i + 1))
+                        .unwrap_or_default()
+                }
+            })
+            .filter(|s| !s.is_empty());
 
         let fields: Vec<(&str, String, Color)> = match meta {
             Some(t) => {
@@ -555,7 +568,7 @@ impl App {
             0
         };
 
-        let num_w = tracks.len().to_string().len();
+        let num_w = tracks.len().to_string().len().max(2);
         let title_w = inner.width.saturating_sub(num_w as u16 + 12) as usize;
 
         let items: Vec<ListItem> = tracks
@@ -565,7 +578,12 @@ impl App {
             .take(visible)
             .map(|(i, t)| {
                 let prefix = if i == sel { "▸ " } else { "  " };
-                let num = format!("{:>num_w$}.", i + 1, num_w = num_w);
+                let track_no = if in_search {
+                    (i + 1) as u32
+                } else {
+                    t.track_number.unwrap_or((i + 1) as u32)
+                };
+                let num = format!("{:>num_w$}.", track_no, num_w = num_w);
                 let dur = utils::format_duration(t.duration);
                 let is_playing = t.path == self.current_path;
                 let now = if is_playing { " ▶" } else { "" };
@@ -801,7 +819,7 @@ impl App {
         for i in 0..10 {
             let val = if is_playing {
                 let s1 = ((pos * 7.5 + i as f64 * 0.8).sin() * 3.8 + (pos * 13.2 - i as f64 * 1.3).cos() * 2.8 + 4.2) * vol as f64;
-                (s1.max(0.0).min(8.0)) as usize
+                s1.clamp(0.0, 8.0) as usize
             } else {
                 0
             };
@@ -851,7 +869,7 @@ impl App {
         let (vu_l, vu_r) = if is_playing {
             let l_peak = ((pos * 9.0).sin().abs() * 0.7 + 0.3) * vol as f64;
             let r_peak = ((pos * 11.0 + 1.2).cos().abs() * 0.7 + 0.3) * vol as f64;
-            ((l_peak * 8.0).max(1.0).min(8.0) as usize, (r_peak * 8.0).max(1.0).min(8.0) as usize)
+            ((l_peak * 8.0).clamp(1.0, 8.0) as usize, (r_peak * 8.0).clamp(1.0, 8.0) as usize)
         } else {
             (0, 0)
         };
@@ -930,7 +948,7 @@ impl App {
 
         // Header with artist, album, and badge
         let source_badge = if let Some(ref lrc) = self.current_lrc {
-            if lrc.lines.iter().any(|l| l.time_secs > 0.0) {
+            if lrc.is_synced {
                 " [ 🎵 Synced ]"
             } else {
                 " [ 📝 Embedded ]"
@@ -1057,7 +1075,7 @@ impl App {
             ("q / Ctrl+C", "Quit"),
         ];
 
-        let mid = (items.len() + 1) / 2;
+        let mid = items.len().div_ceil(2);
         let mut rows: Vec<Line> = Vec::new();
 
         let grid = Style::default().fg(theme.text_dim);
@@ -1486,17 +1504,17 @@ impl App {
                 }
 
                 KeyCode::Char('D') => {
-                    if let Some(album) = self.album_info.get(self.selected_album).map(|a| &a.name) {
+                    if let Some(album) = self.album_info.get(self.selected_album).map(|a| a.name.clone()) {
                         let paths: Vec<String> = self.album_cache.get(album.as_str())
                             .map(|tracks| tracks.iter().map(|t| t.path.clone()).collect())
                             .unwrap_or_default();
-                        if let Some(first) = paths.first()
-                            && let Some(parent) = std::path::Path::new(first).parent() {
-                                let prefix = parent.to_string_lossy().to_string();
-                                let n = self.library.remove_by_prefix(&prefix).unwrap_or(0);
-                                self.status_msg = format!(" Removed {n} tracks");
-                                self.refresh_library();
-                            }
+                        let count = paths.len();
+                        for path in &paths {
+                            let _ = self.library.db.remove_track(path);
+                        }
+                        let _ = self.library.db.flush();
+                        self.status_msg = format!(" Removed {count} tracks from {album}");
+                        self.refresh_library();
                     }
                 }
 

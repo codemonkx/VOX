@@ -86,6 +86,12 @@ impl Database {
                     tracks.push(track);
                 }
         }
+        tracks.sort_by(|a, b| {
+            a.disc_number.unwrap_or(1)
+                .cmp(&b.disc_number.unwrap_or(1))
+                .then_with(|| a.track_number.unwrap_or(u32::MAX).cmp(&b.track_number.unwrap_or(u32::MAX)))
+                .then_with(|| a.path.cmp(&b.path))
+        });
         Ok(tracks)
     }
 
@@ -106,14 +112,20 @@ impl Database {
     }
 
     pub fn search_tracks(&self, keyword: &str) -> Result<Vec<Track>> {
-        let lower = keyword.to_lowercase();
+        let terms: Vec<String> = keyword
+            .to_lowercase()
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
         let tracks = self.all_tracks()?;
         Ok(tracks
             .into_iter()
             .filter(|t| {
-                t.title.to_lowercase().contains(&lower)
-                    || t.artist.to_lowercase().contains(&lower)
-                    || t.album.to_lowercase().contains(&lower)
+                let haystack = format!("{} {} {}", t.title, t.artist, t.album).to_lowercase();
+                terms.iter().all(|term| haystack.contains(term))
             })
             .collect())
     }

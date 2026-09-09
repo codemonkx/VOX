@@ -10,7 +10,7 @@ use crate::metadata;
 use crate::utils;
 
 #[derive(Parser)]
-#[command(name = "music", version, about = "A terminal music player — ncmpcpp-style TUI")]
+#[command(name = "vox", version, about = "A terminal music player — ncmpcpp-style TUI")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -98,7 +98,7 @@ fn cmd_scan(folder: Option<&str>, library: &Library) -> Result<()> {
         None => {
             match config.music_dirs.first() {
                 Some(d) => d.to_string_lossy().to_string(),
-                None => anyhow::bail!("No music directory configured. Use: music config set-music-dir <path>"),
+                None => anyhow::bail!("No music directory configured. Use: vox config set-music-dir <path>"),
             }
         }
     };
@@ -143,7 +143,7 @@ fn cmd_config(cmd: &ConfigCommand) -> Result<()> {
             config.music_dirs = vec![p.to_path_buf()];
             config.save()?;
             println!("Music directory set to: {path}");
-            println!("Run `music scan` to scan your library.");
+            println!("Run `vox scan` to scan your library.");
         }
         ConfigCommand::Show => {
             let config = Config::load()?;
@@ -229,6 +229,12 @@ fn cmd_info(track: &str, library: &Library) -> Result<()> {
     println!("  Title:       {}", track_meta.title);
     println!("  Artist:      {}", track_meta.artist);
     println!("  Album:       {}", track_meta.album);
+    if let Some(tn) = track_meta.track_number {
+        println!("  Track:       {}", tn);
+    }
+    if let Some(dn) = track_meta.disc_number {
+        println!("  Disc:        {}", dn);
+    }
     println!("  Genre:       {}", track_meta.genre);
     println!("  Year:        {}", track_meta.year);
     println!("  Duration:    {}", utils::format_duration(track_meta.duration));

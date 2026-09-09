@@ -19,6 +19,10 @@ pub struct Track {
     pub bitrate: u32,
     pub sample_rate: u32,
     pub codec: String,
+    #[serde(default)]
+    pub track_number: Option<u32>,
+    #[serde(default)]
+    pub disc_number: Option<u32>,
 }
 
 pub fn read_track(path: &Path) -> Result<Track> {
@@ -51,15 +55,16 @@ pub fn read_track(path: &Path) -> Result<Track> {
                 .and_then(|t| t.year())
                 .map(|y| y as i32)
                 .unwrap_or(0);
+            let track_number = tag.as_ref().and_then(|t| t.track());
+            let disc_number = tag.as_ref().and_then(|t| t.disk());
 
             let duration = properties.duration().as_secs_f64();
             let bitrate = properties.audio_bitrate().unwrap_or(0);
             let sample_rate = properties.sample_rate().unwrap_or(0);
             let mut codec = format_codec(file.file_type());
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if ext.eq_ignore_ascii_case("alac") {
-                    codec = "ALAC".into();
-                }
+            if let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && ext.eq_ignore_ascii_case("alac") {
+                codec = "ALAC".into();
             }
 
             Ok(Track {
@@ -73,6 +78,8 @@ pub fn read_track(path: &Path) -> Result<Track> {
                 bitrate,
                 sample_rate,
                 codec,
+                track_number,
+                disc_number,
             })
         }
         Err(_) => read_with_ffprobe(path),
@@ -134,6 +141,13 @@ fn read_with_ffprobe(path: &Path) -> Result<Track> {
         other => other.to_uppercase(),
     };
 
+    let parse_num = |field: &str| -> Option<u32> {
+        let val = extract(field);
+        val.split(&['/', ':'][..]).next()?.trim().parse().ok()
+    };
+    let track_number = parse_num("track");
+    let disc_number = parse_num("disc");
+
     Ok(Track {
         path: path.to_string_lossy().to_string(),
         title,
@@ -145,6 +159,8 @@ fn read_with_ffprobe(path: &Path) -> Result<Track> {
         bitrate,
         sample_rate,
         codec,
+        track_number,
+        disc_number,
     })
 }
 

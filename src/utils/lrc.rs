@@ -14,6 +14,7 @@ pub struct LrcLine {
 #[derive(Debug, Clone, Default)]
 pub struct LrcFile {
     pub lines: Vec<LrcLine>,
+    pub is_synced: bool,
 }
 
 impl LrcFile {
@@ -23,24 +24,21 @@ impl LrcFile {
         // 1. Check if the song file has embedded lyrics in its metadata tags
         if let Ok(tagged_file) = read_from_path(path) {
             for tag in tagged_file.tags() {
-                if let Some(lyrics_str) = tag.get_string(&ItemKey::Lyrics) {
-                    if !lyrics_str.trim().is_empty() {
-                        let parsed = Self::parse(lyrics_str);
-                        if !parsed.lines.is_empty() {
-                            return Some(parsed);
-                        }
+                if let Some(lyrics_str) = tag.get_string(&ItemKey::Lyrics)
+                    && !lyrics_str.trim().is_empty() {
+                    let parsed = Self::parse(lyrics_str);
+                    if !parsed.lines.is_empty() {
+                        return Some(parsed);
                     }
                 }
                 for item in tag.items() {
                     let k = format!("{:?}", item.key()).to_lowercase();
-                    if k.contains("lyric") || k.contains("uslt") || k.contains("sylt") {
-                        if let lofty::tag::ItemValue::Text(s) = item.value() {
-                            if !s.trim().is_empty() {
-                                let parsed = Self::parse(s);
-                                if !parsed.lines.is_empty() {
-                                    return Some(parsed);
-                                }
-                            }
+                    if (k.contains("lyric") || k.contains("uslt") || k.contains("sylt"))
+                        && let lofty::tag::ItemValue::Text(s) = item.value()
+                        && !s.trim().is_empty() {
+                        let parsed = Self::parse(s);
+                        if !parsed.lines.is_empty() {
+                            return Some(parsed);
                         }
                     }
                 }
@@ -49,25 +47,22 @@ impl LrcFile {
 
         // 2. Fallback to searching for .lrc file in track folder
         let lrc_path = path.with_extension("lrc");
-        if lrc_path.exists() {
-            if let Ok(content) = fs::read_to_string(&lrc_path) {
-                let parsed = Self::parse(&content);
-                if !parsed.lines.is_empty() {
-                    return Some(parsed);
-                }
+        if lrc_path.exists()
+            && let Ok(content) = fs::read_to_string(&lrc_path) {
+            let parsed = Self::parse(&content);
+            if !parsed.lines.is_empty() {
+                return Some(parsed);
             }
         }
 
-        if let Some(parent) = path.parent() {
-            if let Some(stem) = path.file_stem() {
-                let candidate = parent.join(format!("{}.lrc", stem.to_string_lossy()));
-                if candidate.exists() {
-                    if let Ok(content) = fs::read_to_string(&candidate) {
-                        let parsed = Self::parse(&content);
-                        if !parsed.lines.is_empty() {
-                            return Some(parsed);
-                        }
-                    }
+        if let Some(parent) = path.parent()
+            && let Some(stem) = path.file_stem() {
+            let candidate = parent.join(format!("{}.lrc", stem.to_string_lossy()));
+            if candidate.exists()
+                && let Ok(content) = fs::read_to_string(&candidate) {
+                let parsed = Self::parse(&content);
+                if !parsed.lines.is_empty() {
+                    return Some(parsed);
                 }
             }
         }
@@ -115,7 +110,10 @@ impl LrcFile {
             lines.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
         }
 
-        Self { lines }
+        Self {
+            lines,
+            is_synced: has_timestamps,
+        }
     }
 
     pub fn current_line_index(&self, current_pos: f64) -> Option<usize> {

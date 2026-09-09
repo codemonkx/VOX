@@ -31,18 +31,12 @@ impl ThemeKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "nord" => ThemeKind::Nord,
-            "dracula" => ThemeKind::Dracula,
-            "tokyonight" | "tokyo night" | "tokyo_night" => ThemeKind::TokyoNight,
-            "gruvbox" => ThemeKind::Gruvbox,
-            "cyberpunk" => ThemeKind::Cyberpunk,
-            _ => ThemeKind::Catppuccin,
-        }
+        s.parse().unwrap_or(ThemeKind::Catppuccin)
     }
 
-    pub fn to_str(&self) -> &'static str {
+    pub fn to_str(self) -> &'static str {
         match self {
             ThemeKind::Catppuccin => "catppuccin",
             ThemeKind::Nord => "nord",
@@ -51,6 +45,21 @@ impl ThemeKind {
             ThemeKind::Gruvbox => "gruvbox",
             ThemeKind::Cyberpunk => "cyberpunk",
         }
+    }
+}
+
+impl std::str::FromStr for ThemeKind {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "nord" => ThemeKind::Nord,
+            "dracula" => ThemeKind::Dracula,
+            "tokyonight" | "tokyo night" | "tokyo_night" => ThemeKind::TokyoNight,
+            "gruvbox" => ThemeKind::Gruvbox,
+            "cyberpunk" => ThemeKind::Cyberpunk,
+            _ => ThemeKind::Catppuccin,
+        })
     }
 }
 

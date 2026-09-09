@@ -122,6 +122,7 @@ impl Player {
     }
 
     pub fn play(&self, path: &Path, duration_override: Option<f64>, source_rate: u32) -> Result<()> {
+        let old_rate = *self.current_rate.lock().unwrap();
         self.stop();
 
         *self.current_path.lock().unwrap() = Some(path.to_string_lossy().to_string());
@@ -130,13 +131,12 @@ impl Player {
 
         // Bit-perfect: open stream at source rate if device supports it.
         // Only recreates the stream when the rate actually changes.
-        let old_rate = *self.current_rate.lock().unwrap();
-        *self.current_rate.lock().unwrap() = source_rate;
-        if !needs_ffmpeg && source_rate > 0 && old_rate != 0 && old_rate != source_rate
+        if !needs_ffmpeg && source_rate > 0 && old_rate != source_rate
             && let Ok((s, h)) = create_stream_at_rate(source_rate) {
                 *self._stream.lock().unwrap() = Some(s);
                 *self.stream_handle.lock().unwrap() = Some(h.clone());
             }
+        *self.current_rate.lock().unwrap() = source_rate;
         let handle = self.stream_handle.lock().unwrap().clone()
             .ok_or_else(|| anyhow::anyhow!("no stream handle"))?;
 
@@ -289,7 +289,6 @@ impl Player {
         *self.current_duration.lock().unwrap() = 0.0;
         *self.current_path.lock().unwrap() = None;
         *self.seek_offset.lock().unwrap() = 0.0;
-        *self.current_rate.lock().unwrap() = 0;
         self.samples_consumed.store(0, Ordering::Relaxed);
         *self.channels.lock().unwrap() = 2;
     }
@@ -308,7 +307,7 @@ impl Player {
         if !out.status.success() { return None; }
         let s = std::str::from_utf8(&out.stdout).ok()?;
         let vol = s.trim_start_matches("Volume:")
-            .trim().split_whitespace().next()?;
+            .split_whitespace().next()?;
         vol.parse::<f32>().ok()
     }
 
@@ -317,10 +316,9 @@ impl Player {
         let out = std::process::Command::new("wpctl")
             .args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{vol:.2}")])
             .output();
-        if let Ok(o) = &out {
-            if !o.status.success() {
-                eprintln!("wpctl set-volume failed");
-            }
+        if let Ok(o) = &out
+            && !o.status.success() {
+            eprintln!("wpctl set-volume failed");
         }
     }
 
@@ -485,14 +483,38 @@ fn create_stream_at_rate(rate: u32) -> Result<(OutputStream, OutputStreamHandle)
         .default_output_device()
         .ok_or_else(|| anyhow::anyhow!("no output device"))?;
 
-    let config = device
-        .supported_output_configs()
-        .map_err(|e| anyhow::anyhow!("{e:?}"))?
-        .find(|c| {
+    let default_cfg = device.default_output_config().ok();
+    let preferred_channels = default_cfg.as_ref().map(|c| c.channels()).unwrap_or(2);
+    let preferred_format = default_cfg.as_ref().map(|c| c.sample_format()).unwrap_or(rodio::cpal::SampleFormat::F32);
+
+    let supported = device.supported_output_configs().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let configs: Vec<_> = supported.collect();
+
+    let config = configs.iter().find(|c| {
+        c.min_sample_rate().0 <= rate && c.max_sample_rate().0 >= rate
+            && c.channels() == preferred_channels
+            && c.sample_format() == preferred_format
+    })
+    .or_else(|| {
+        configs.iter().find(|c| {
+            c.min_sample_rate().0 <= rate && c.max_sample_rate().0 >= rate
+                && c.channels() == 2
+                && c.sample_format() == rodio::cpal::SampleFormat::F32
+        })
+    })
+    .or_else(|| {
+        configs.iter().find(|c| {
+            c.min_sample_rate().0 <= rate && c.max_sample_rate().0 >= rate
+                && c.channels() == 2
+        })
+    })
+    .or_else(|| {
+        configs.iter().find(|c| {
             c.min_sample_rate().0 <= rate && c.max_sample_rate().0 >= rate
         })
-        .map(|c| c.with_sample_rate(rodio::cpal::SampleRate(rate)))
-        .ok_or_else(|| anyhow::anyhow!("rate {rate} not supported by device"))?;
+    })
+    .map(|c| c.with_sample_rate(rodio::cpal::SampleRate(rate)))
+    .ok_or_else(|| anyhow::anyhow!("rate {rate} not supported by device"))?;
 
     let (stream, handle) =
         OutputStream::try_from_device_config(&device, config)
@@ -635,7 +657,13 @@ impl CustomSymphoniaDecoder {
         let format = probed.format;
         let track = format.default_track().ok_or_else(|| anyhow::anyhow!("no default track"))?;
         let track_id = track.id;
-        let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
+        let mut sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
+        // Fallback for MP4/M4A containers where sample_rate > 65535 is encoded as 1 or 0
+        if (sample_rate <= 1 || sample_rate < 8000)
+            && let Some(tb) = track.codec_params.time_base
+            && tb.denom >= 8000 {
+            sample_rate = tb.denom / tb.numer.max(1);
+        }
         let channels = track.codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
 
         let dec_opts = DecoderOptions::default();
@@ -643,7 +671,7 @@ impl CustomSymphoniaDecoder {
             .make(&track.codec_params, &dec_opts)
             .map_err(|e| anyhow::anyhow!("Symphonia decoder error: {e:?}"))?;
 
-        Ok(Self {
+        let mut dec = Self {
             format,
             decoder,
             track_id,
@@ -651,7 +679,10 @@ impl CustomSymphoniaDecoder {
             channels,
             buffer: Vec::new(),
             buf_pos: 0,
-        })
+        };
+        // Decode first packet to populate buffer and verify true rate/channels from decoded PCM
+        dec.refill();
+        Ok(dec)
     }
 
     pub fn seek(&mut self, time_secs: f64) -> Result<()> {
@@ -688,6 +719,14 @@ impl CustomSymphoniaDecoder {
             }
             match self.decoder.decode(&packet) {
                 Ok(audio_buf) => {
+                    let rate = audio_buf.spec().rate;
+                    if rate >= 8000 {
+                        self.sample_rate = rate;
+                    }
+                    let ch = audio_buf.spec().channels.count() as u16;
+                    if ch > 0 {
+                        self.channels = ch;
+                    }
                     self.buffer.clear();
                     self.buf_pos = 0;
                     match audio_buf {
@@ -803,10 +842,9 @@ impl CustomSymphoniaDecoder {
 impl Iterator for CustomSymphoniaDecoder {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
-        if self.buf_pos >= self.buffer.len() {
-            if !self.refill() {
-                return None;
-            }
+        if self.buf_pos >= self.buffer.len()
+            && !self.refill() {
+            return None;
         }
         let sample = self.buffer[self.buf_pos];
         self.buf_pos += 1;
