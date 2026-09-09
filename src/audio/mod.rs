@@ -199,20 +199,30 @@ impl Player {
 
         *self.current_path.lock().unwrap() = Some(path.to_string_lossy().to_string());
 
+        let raw_source = create_source_for_path(path)?;
+        let detected_rate = raw_source.sample_rate();
+        let target_rate = if source_rate > 0 { source_rate } else { detected_rate };
+
         let needs_ffmpeg = is_ffmpeg_required(path);
 
         // Bit-perfect: open stream at source rate if device supports it.
         // Only recreates the stream when the rate actually changes.
-        if !needs_ffmpeg && source_rate > 0 && old_rate != source_rate
-            && let Ok((s, h)) = create_stream_at_rate(source_rate) {
-                *self._stream.lock().unwrap() = Some(s);
-                *self.stream_handle.lock().unwrap() = Some(h.clone());
+        if !needs_ffmpeg && target_rate > 0 && old_rate != target_rate {
+            match create_stream_at_rate(target_rate) {
+                Ok((s, h)) => {
+                    *self._stream.lock().unwrap() = Some(s);
+                    *self.stream_handle.lock().unwrap() = Some(h);
+                    *self.current_rate.lock().unwrap() = target_rate;
+                }
+                Err(e) => {
+                    eprintln!("Rate switch to {target_rate}Hz failed, using default: {e}");
+                }
             }
-        *self.current_rate.lock().unwrap() = source_rate;
+        }
+
         let handle = self.stream_handle.lock().unwrap().clone()
             .ok_or_else(|| anyhow::anyhow!("no stream handle"))?;
 
-        let raw_source = create_source_for_path(path)?;
         *self.channels.lock().unwrap() = raw_source.channels();
         let source: Box<dyn Source<Item = f32> + Send> = Box::new(PositionTracker::new(
             raw_source,
